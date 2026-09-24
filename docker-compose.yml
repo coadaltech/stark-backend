@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: stark-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stark
+      POSTGRES_PASSWORD: stark
+      POSTGRES_DB: stark
+    ports:
+      - "5433:5432"
+    volumes:
+      - stark-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stark -d stark"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  stark-pgdata:
