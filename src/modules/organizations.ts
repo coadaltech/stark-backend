@@ -219,6 +219,38 @@ function isDuplicateDomainError(error: unknown): boolean {
   return false;
 }
 
+// ---- Licence (subscription) dates --------------------------------------------
+const licenceFields = {
+  OrganizationStartDate: "Start date",
+  OrganizationEndDate: "End date",
+} as const;
+type LicenceDates = Record<keyof typeof licenceFields, string>;
+
+/** "YYYY-MM-DD" that is an actual calendar day (rejects e.g. 2025-02-30). */
+function isCalendarDate(value: string) {
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+/** Both dates must be real days, and the licence cannot end before it starts. */
+function validateLicence(dates: LicenceDates) {
+  const errors: Record<string, string> = {};
+  for (const [key, label] of Object.entries(licenceFields) as [
+    keyof LicenceDates,
+    string,
+  ][]) {
+    if (!isCalendarDate(dates[key]))
+      errors[key] = `${label} is not a valid date`;
+  }
+  if (
+    Object.keys(errors).length === 0 &&
+    dates.OrganizationEndDate < dates.OrganizationStartDate
+  ) {
+    errors.OrganizationEndDate = "End date cannot be before start date";
+  }
+  return errors;
+}
+
 function validateSms(sms: SmsSettings) {
   const errors: Record<string, string> = {};
   if (sms.OrganizationSms !== "1") return errors;
@@ -317,6 +349,14 @@ const fields = {
   OrganizationDomainURL: t.String({
     maxLength: 100,
     error: "Domain URL can be at most 100 characters",
+  }),
+  OrganizationStartDate: t.String({
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+    error: "Start date must be YYYY-MM-DD",
+  }),
+  OrganizationEndDate: t.String({
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+    error: "End date must be YYYY-MM-DD",
   }),
 };
 
@@ -478,6 +518,10 @@ export const organizations = new Elysia({
         const value = body[key];
         if (value !== undefined) changes[key] = value;
       }
+      if (body.OrganizationStartDate !== undefined)
+        changes.OrganizationStartDate = body.OrganizationStartDate;
+      if (body.OrganizationEndDate !== undefined)
+        changes.OrganizationEndDate = body.OrganizationEndDate;
       if (Object.keys(changes).length === 0) {
         return status(422, {
           message: "Provide at least one field to update.",
@@ -489,14 +533,19 @@ export const organizations = new Elysia({
         Object.keys(smsFields).some((key) => key in changes);
       const touchesDomain =
         "OrganizationOnDomain" in changes || "OrganizationDomainURL" in changes;
+      const touchesLicence = Object.keys(licenceFields).some(
+        (key) => key in changes,
+      );
       const where = and(eq(organization.OrganizationId, params.id), notDeleted);
 
       const result = await db
         .transaction(async (tx) => {
-          if (touchesSms || touchesDomain) {
+          if (touchesSms || touchesDomain || touchesLicence) {
             // Validate the settings as they will be after this update (saved values + changes).
             const [current] = await tx
               .select({
+                OrganizationStartDate: organization.OrganizationStartDate,
+                OrganizationEndDate: organization.OrganizationEndDate,
                 OrganizationOnDomain: organization.OrganizationOnDomain,
                 OrganizationDomainURL: organization.OrganizationDomainURL,
                 OrganizationSms: organization.OrganizationSms,
@@ -513,6 +562,7 @@ export const organizations = new Elysia({
             const next = { ...current, ...changes };
             const errors = {
               ...(touchesSms ? validateSms(next as SmsSettings) : {}),
+              ...(touchesLicence ? validateLicence(next as LicenceDates) : {}),
               ...(touchesDomain
                 ? await validateDomain(tx, params.id, next as DomainSettings)
                 : {}),
