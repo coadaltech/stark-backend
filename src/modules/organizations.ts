@@ -143,6 +143,7 @@ const detailColumns = {
   OrganizationSmsPort: organization.OrganizationSmsPort,
   OrganizationOnDomain: organization.OrganizationOnDomain,
   OrganizationDomainURL: organization.OrganizationDomainURL,
+  IsOrganizationAllow: organization.IsOrganizationAllow,
   ...configColumns,
 };
 
@@ -358,6 +359,10 @@ const fields = {
     pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
     error: "End date must be YYYY-MM-DD",
   }),
+  // Active/Deactive tab: "1" = organization allowed (active), "0" = deactivated.
+  IsOrganizationAllow: t.Union([t.Literal("0"), t.Literal("1")], {
+    error: "Organization status must be active (1) or deactivated (0)",
+  }),
 };
 
 const OrganizationListItem = t.Object({
@@ -385,6 +390,7 @@ const OrganizationDetail = t.Composite([
     OrganizationSmsPort: t.String(),
     OrganizationOnDomain: t.Number(),
     OrganizationDomainURL: t.String(),
+    IsOrganizationAllow: t.String(),
     ...configResponse,
   }),
 ]);
@@ -522,6 +528,8 @@ export const organizations = new Elysia({
         changes.OrganizationStartDate = body.OrganizationStartDate;
       if (body.OrganizationEndDate !== undefined)
         changes.OrganizationEndDate = body.OrganizationEndDate;
+      if (body.IsOrganizationAllow !== undefined)
+        changes.IsOrganizationAllow = body.IsOrganizationAllow;
       if (Object.keys(changes).length === 0) {
         return status(422, {
           message: "Provide at least one field to update.",
