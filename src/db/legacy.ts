@@ -2,7 +2,7 @@
 // They are intentionally NOT in drizzle.config's schema, so drizzle-kit never tries to
 // create or alter them; they're defined here only for typed queries.
 // Only the columns the app reads or writes are listed; the rest keep their DB defaults.
-import { bigint, char, date, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { bigint, char, date, integer, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const organization = pgTable("organization", {
   OrganizationId: bigint("OrganizationId", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
@@ -10,6 +10,7 @@ export const organization = pgTable("organization", {
   OrganizationName: varchar("OrganizationName", { length: 30 }).notNull(),
   OrganizationLogoColor: varchar("OrganizationLogoColor", { length: 20 }).notNull(),
   OrganizationTheme: varchar("OrganizationTheme", { length: 20 }).notNull(),
+  OrganizationAppAccess: integer("OrganizationAppAccess").default(0),
   OrganizationMobile: varchar("OrganizationMobile", { length: 10 }).notNull(),
   OrganizationAddress: varchar("OrganizationAddress", { length: 60 }).notNull(),
   OrganizationSms: varchar("OrganizationSms", { length: 1 }).notNull(),
