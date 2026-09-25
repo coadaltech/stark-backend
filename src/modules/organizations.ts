@@ -1,5 +1,5 @@
 import { Elysia, t } from "elysia";
-import { and, asc, eq, ne, sql } from "drizzle-orm";
+import { and, asc, eq, ne, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { organization } from "../db/legacy";
 
@@ -22,6 +22,109 @@ const listColumns = {
   AddedDate: organization.AddedDate,
 };
 
+// ---- Config tab settings -------------------------------------------------------
+// One entry per column: its validation schema and the value to report when the legacy
+// column is NULL (the column default). Everything else (select, schemas, PATCH) derives from this.
+const flag = (label: string) =>
+  t.Union([t.Literal(0), t.Literal(1)], { error: `${label} must be 0 or 1` });
+const choice = (label: string, values: readonly number[]) =>
+  t.Union(
+    values.map((v) => t.Literal(v)),
+    { error: `${label} must be one of: ${values.join(", ")}` },
+  );
+const wholeNumber = (label: string, minimum: number, maximum: number) =>
+  t.Integer({
+    minimum,
+    maximum,
+    error: `${label} must be a whole number from ${minimum} to ${maximum}`,
+  });
+
+const configSettings = {
+  IsEnableTazzaPatti: {
+    schema: flag("Tazza Patti in Transaction"),
+    fallback: 0,
+  },
+  IsMainJantriRoundOf: { schema: flag("Main Jantri Round Of"), fallback: 0 },
+  IsCollectionJantriRoundOf: {
+    schema: flag("Collection Jantri Round Of"),
+    fallback: 0,
+  },
+  IsMultiplyUpMainJantri: { schema: flag("Show Up Main Jantri"), fallback: 0 },
+  IsMultiplyUpCollection: {
+    schema: flag("Show Up Collection Jantri"),
+    fallback: 0,
+  },
+  IsVoucherVerify: { schema: flag("Voucher Verify"), fallback: 0 },
+  IsDashboardStaffGainerLooser: {
+    schema: flag("Dashboard Gainer/Looser"),
+    fallback: 0,
+  },
+  IsTransactionAlreadyExist: {
+    schema: flag("Check Transaction Exist"),
+    fallback: 0,
+  },
+  IsAutoUserNameForStaff: { schema: flag("Staff Auto UserName"), fallback: 0 },
+  UnPaidKistPopupForDashboard: {
+    schema: flag("Kist On Dashboard"),
+    fallback: 0,
+  },
+  // 0 = Disable, 1 = Ledger All, 2 = Ledger Without HPT
+  IsBackLimitPopup: {
+    schema: choice("Show Back Limit Popup", [0, 1, 2]),
+    fallback: 0,
+  },
+  // 0 = All Apply, 1 = Uttar No, 2 = Jantri No
+  HissaNotApplyMode: {
+    schema: choice("Hissa Not Apply Mode", [0, 1, 2]),
+    fallback: 0,
+  },
+  VapsiWorkingDays: {
+    schema: wholeNumber("Vapsi Work Days", 0, 365),
+    fallback: 0,
+  },
+  AbsentLedgerLockDays: {
+    schema: wholeNumber("Absent Ledger Lock Days", 0, 365),
+    fallback: 0,
+  },
+  RoundOffOnMainJantri: {
+    schema: wholeNumber("Main Jantri Round", 1, 10000),
+    fallback: 50,
+  },
+  RoundOffOnCollection: {
+    schema: wholeNumber("Collection Jantri Round", 1, 10000),
+    fallback: 50,
+  },
+  skey_Random_Old: { schema: flag("Random Old"), fallback: 1 },
+  skey_Crossing: { schema: flag("Crossing"), fallback: 1 },
+  skey_FromTo: { schema: flag("From-To"), fallback: 1 },
+  skey_Random_New: { schema: flag("Random New"), fallback: 1 },
+  skey_OddEven: { schema: flag("Odd/Even"), fallback: 0 },
+  skey_EkdiDukdi: { schema: flag("Ekdi/Dukdi"), fallback: 0 },
+  skey_Joda: { schema: flag("Joda"), fallback: 0 },
+  skey_JodiDaane: { schema: flag("JodiDaane"), fallback: 0 },
+} as const;
+
+type ConfigKey = keyof typeof configSettings;
+const configKeys = Object.keys(configSettings) as ConfigKey[];
+
+const configColumns = Object.fromEntries(
+  configKeys.map((key) => [
+    key,
+    sql<number>`coalesce(${organization[key]}, ${configSettings[key].fallback})`.mapWith(
+      Number,
+    ),
+  ]),
+) as Record<ConfigKey, SQL<number>>;
+
+const configSchemas = Object.fromEntries(
+  configKeys.map((key) => [key, configSettings[key].schema]),
+) as { [K in ConfigKey]: (typeof configSettings)[K]["schema"] };
+
+const configResponse = Object.fromEntries(
+  configKeys.map((key) => [key, t.Number()]),
+) as Record<ConfigKey, ReturnType<typeof t.Number>>;
+// ---------------------------------------------------------------------------------
+
 const detailColumns = {
   ...listColumns,
   OrganizationTheme: organization.OrganizationTheme,
@@ -37,6 +140,7 @@ const detailColumns = {
   OrganizationSmsPort: organization.OrganizationSmsPort,
   OrganizationOnDomain: organization.OrganizationOnDomain,
   OrganizationDomainURL: organization.OrganizationDomainURL,
+  ...configColumns,
 };
 
 // SMS settings are validated together: when SMS is on, every connection field is needed.
@@ -151,6 +255,7 @@ const notDeleted = ne(organization.RecordStatus, "D");
 
 // Field schemas shared by create and update.
 const fields = {
+  ...configSchemas,
   OrganizationName: t.String({
     minLength: 1,
     maxLength: 30,
@@ -237,6 +342,7 @@ const OrganizationDetail = t.Composite([
     OrganizationSmsPort: t.String(),
     OrganizationOnDomain: t.Number(),
     OrganizationDomainURL: t.String(),
+    ...configResponse,
   }),
 ]);
 
@@ -365,6 +471,10 @@ export const organizations = new Elysia({
       if (body.OrganizationDomainURL !== undefined)
         changes.OrganizationDomainURL =
           body.OrganizationDomainURL.trim().toLowerCase();
+      for (const key of configKeys) {
+        const value = body[key];
+        if (value !== undefined) changes[key] = value;
+      }
       if (Object.keys(changes).length === 0) {
         return status(422, {
           message: "Provide at least one field to update.",

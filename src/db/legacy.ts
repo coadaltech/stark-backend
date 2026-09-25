@@ -2,7 +2,7 @@
 // They are intentionally NOT in drizzle.config's schema, so drizzle-kit never tries to
 // create or alter them; they're defined here only for typed queries.
 // Only the columns the app reads or writes are listed; the rest keep their DB defaults.
-import { bigint, char, date, integer, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { bigint, char, date, integer, pgTable, smallint, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const organization = pgTable("organization", {
   OrganizationId: bigint("OrganizationId", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
@@ -15,6 +15,31 @@ export const organization = pgTable("organization", {
   OrganizationAddress: varchar("OrganizationAddress", { length: 60 }).notNull(),
   OrganizationOnDomain: integer("OrganizationOnDomain").notNull().default(0),
   OrganizationDomainURL: varchar("OrganizationDomainURL", { length: 100 }).notNull().default(""),
+  // Config tab settings (legacy flags are 0/1; most columns are nullable with a default).
+  IsEnableTazzaPatti: integer("IsEnableTazzaPatti").notNull().default(0),
+  IsMainJantriRoundOf: integer("IsMainJantriRoundOf").default(0),
+  IsCollectionJantriRoundOf: integer("IsCollectionJantriRoundOf").default(0),
+  IsMultiplyUpMainJantri: integer("IsMultiplyUpMainJantri").default(0),
+  IsMultiplyUpCollection: integer("IsMultiplyUpCollection").default(0),
+  RoundOffOnMainJantri: integer("RoundOffOnMainJantri").default(50),
+  RoundOffOnCollection: integer("RoundOffOnCollection").default(50),
+  skey_Random_Old: integer("skey_Random_Old").notNull().default(1),
+  skey_Crossing: integer("skey_Crossing").notNull().default(1),
+  skey_FromTo: integer("skey_FromTo").notNull().default(1),
+  skey_Random_New: integer("skey_Random_New").notNull().default(1),
+  skey_OddEven: integer("skey_OddEven").notNull().default(0),
+  skey_EkdiDukdi: integer("skey_EkdiDukdi").notNull().default(0),
+  skey_Joda: integer("skey_Joda").notNull().default(0),
+  skey_JodiDaane: integer("skey_JodiDaane").default(0),
+  IsVoucherVerify: smallint("IsVoucherVerify").default(0),
+  IsDashboardStaffGainerLooser: smallint("IsDashboardStaffGainerLooser").default(0),
+  IsTransactionAlreadyExist: smallint("IsTransactionAlreadyExist").default(0),
+  HissaNotApplyMode: integer("HissaNotApplyMode").default(0),
+  VapsiWorkingDays: integer("VapsiWorkingDays").default(0),
+  IsAutoUserNameForStaff: integer("IsAutoUserNameForStaff").default(0),
+  UnPaidKistPopupForDashboard: integer("UnPaidKistPopupForDashboard").default(0),
+  IsBackLimitPopup: smallint("IsBackLimitPopup").default(0),
+  AbsentLedgerLockDays: integer("AbsentLedgerLockDays").default(0),
   OrganizationSms: varchar("OrganizationSms", { length: 1 }).notNull(),
   OrganizationSmsUrl: varchar("OrganizationSmsUrl", { length: 100 }).notNull(),
   OrganizationSmsUsername: varchar("OrganizationSmsUsername", { length: 30 }).notNull(),
