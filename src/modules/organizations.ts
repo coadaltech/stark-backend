@@ -25,13 +25,18 @@ const listColumns = {
 const detailColumns = {
   ...listColumns,
   OrganizationTheme: organization.OrganizationTheme,
-  OrganizationAppAccess: sql<number>`coalesce(${organization.OrganizationAppAccess}, 0)`.mapWith(Number),
+  OrganizationAppAccess:
+    sql<number>`coalesce(${organization.OrganizationAppAccess}, 0)`.mapWith(
+      Number,
+    ),
   OrganizationSms: organization.OrganizationSms,
   OrganizationSmsUrl: organization.OrganizationSmsUrl,
   OrganizationSmsUsername: organization.OrganizationSmsUsername,
   OrganizationSmsPassword: organization.OrganizationSmsPassword,
   OrganizationSmsSenderId: organization.OrganizationSmsSenderId,
   OrganizationSmsPort: organization.OrganizationSmsPort,
+  OrganizationOnDomain: organization.OrganizationOnDomain,
+  OrganizationDomainURL: organization.OrganizationDomainURL,
 };
 
 // SMS settings are validated together: when SMS is on, every connection field is needed.
@@ -42,27 +47,86 @@ const smsFields = {
   OrganizationSmsSenderId: "SMS sender id",
   OrganizationSmsPort: "SMS port",
 } as const;
-type SmsSettings = { OrganizationSms: string } & Record<keyof typeof smsFields, string>;
+type SmsSettings = { OrganizationSms: string } & Record<
+  keyof typeof smsFields,
+  string
+>;
+
+// Bare host name, e.g. "lgaikhai.com" or "app.lgaikhai.com" (no scheme, path or port).
+// const DOMAIN_PATTERN =
+//   /^(?=.{1,100}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type DomainSettings = {
+  OrganizationOnDomain: number;
+  OrganizationDomainURL: string;
+};
+
+/** Domain is required while ON, must be a bare host name, and can belong to only one organization. */
+async function validateDomain(
+  tx: Tx,
+  organizationId: number,
+  domain: DomainSettings,
+): Promise<Record<string, string>> {
+  const url = domain.OrganizationDomainURL;
+  if (!url) {
+    return domain.OrganizationOnDomain === 1
+      ? { OrganizationDomainURL: "Domain URL is required when Domain is on" }
+      : {};
+  }
+  // if (!DOMAIN_PATTERN.test(url)) {
+  //   return { OrganizationDomainURL: "Enter a domain like example.com (no http://, path or port)" };
+  // }
+  const [taken] = await tx
+    .select({ OrganizationName: organization.OrganizationName })
+    .from(organization)
+    .where(
+      and(
+        sql`lower(${organization.OrganizationDomainURL}) = ${url}`,
+        ne(organization.OrganizationId, organizationId),
+        notDeleted,
+      ),
+    )
+    .limit(1);
+  return taken
+    ? {
+        OrganizationDomainURL: `Domain already used by ${taken.OrganizationName}`,
+      }
+    : {};
+}
 
 function validateSms(sms: SmsSettings) {
   const errors: Record<string, string> = {};
   if (sms.OrganizationSms !== "1") return errors;
-  for (const [key, label] of Object.entries(smsFields) as [keyof typeof smsFields, string][]) {
+  for (const [key, label] of Object.entries(smsFields) as [
+    keyof typeof smsFields,
+    string,
+  ][]) {
     if (!sms[key].trim()) errors[key] = `${label} is required when SMS is on`;
   }
-  if (!errors.OrganizationSmsUrl && !/^https?:\/\/\S+$/i.test(sms.OrganizationSmsUrl)) {
+  if (
+    !errors.OrganizationSmsUrl &&
+    !/^https?:\/\/\S+$/i.test(sms.OrganizationSmsUrl)
+  ) {
     errors.OrganizationSmsUrl = "SMS URL must start with http:// or https://";
   }
   const port = Number(sms.OrganizationSmsPort);
-  if (!errors.OrganizationSmsPort && !(/^\d+$/.test(sms.OrganizationSmsPort) && port >= 1 && port <= 65535)) {
+  if (
+    !errors.OrganizationSmsPort &&
+    !(/^\d+$/.test(sms.OrganizationSmsPort) && port >= 1 && port <= 65535)
+  ) {
     errors.OrganizationSmsPort = "SMS port must be a number from 1 to 65535";
   }
   return errors;
 }
 
 // "2020-09-22 10:44:18.123" -> "2020-09-22T10:44:18" (local time, no zone, as stored)
-const toIsoLocal = (value: string) => value.replace(" ", "T").replace(/\.\d+$/, "");
-const serialize = <R extends { AddedDate: string }>(row: R) => ({ ...row, AddedDate: toIsoLocal(row.AddedDate) });
+const toIsoLocal = (value: string) =>
+  value.replace(" ", "T").replace(/\.\d+$/, "");
+const serialize = <R extends { AddedDate: string }>(row: R) => ({
+  ...row,
+  AddedDate: toIsoLocal(row.AddedDate),
+});
 
 const upper = (value: string) => value.trim().toUpperCase();
 
@@ -70,20 +134,65 @@ const notDeleted = ne(organization.RecordStatus, "D");
 
 // Field schemas shared by create and update.
 const fields = {
-  OrganizationName: t.String({ minLength: 1, maxLength: 30, error: "Organization name is required (max 30 characters)" }),
-  OrganizationOwnerName: t.String({ minLength: 1, maxLength: 30, error: "Owner name is required (max 30 characters)" }),
-  OrganizationMobile: t.String({ pattern: "^[0-9]{10}$", error: "Mobile must be 10 digits" }),
-  OrganizationAddress: t.String({ minLength: 1, maxLength: 60, error: "Address is required (max 60 characters)" }),
+  OrganizationName: t.String({
+    minLength: 1,
+    maxLength: 30,
+    error: "Organization name is required (max 30 characters)",
+  }),
+  OrganizationOwnerName: t.String({
+    minLength: 1,
+    maxLength: 30,
+    error: "Owner name is required (max 30 characters)",
+  }),
+  OrganizationMobile: t.String({
+    pattern: "^[0-9]{10}$",
+    error: "Mobile must be 10 digits",
+  }),
+  OrganizationAddress: t.String({
+    minLength: 1,
+    maxLength: 60,
+    error: "Address is required (max 60 characters)",
+  }),
   // Literal unions, not t.UnionEnum: Elysia fills UnionEnum fields with a default value when
   // they are missing, which would make every partial PATCH overwrite Theme/App Access.
-  OrganizationTheme: t.Union(THEMES.map((v) => t.Literal(v)), { error: `Theme must be one of: ${THEMES.join(", ")}` }),
-  OrganizationAppAccess: t.Union(APP_ACCESS.map((v) => t.Literal(v)), { error: "Invalid app access" }),
-  OrganizationSms: t.Union([t.Literal("0"), t.Literal("1")], { error: "SMS must be on (1) or off (0)" }),
-  OrganizationSmsUrl: t.String({ maxLength: 100, error: "SMS URL can be at most 100 characters" }),
-  OrganizationSmsUsername: t.String({ maxLength: 30, error: "SMS username can be at most 30 characters" }),
-  OrganizationSmsPassword: t.String({ maxLength: 30, error: "SMS password can be at most 30 characters" }),
-  OrganizationSmsSenderId: t.String({ maxLength: 10, error: "SMS sender id can be at most 10 characters" }),
-  OrganizationSmsPort: t.String({ maxLength: 10, error: "SMS port can be at most 10 characters" }),
+  OrganizationTheme: t.Union(
+    THEMES.map((v) => t.Literal(v)),
+    { error: `Theme must be one of: ${THEMES.join(", ")}` },
+  ),
+  OrganizationAppAccess: t.Union(
+    APP_ACCESS.map((v) => t.Literal(v)),
+    { error: "Invalid app access" },
+  ),
+  OrganizationSms: t.Union([t.Literal("0"), t.Literal("1")], {
+    error: "SMS must be on (1) or off (0)",
+  }),
+  OrganizationSmsUrl: t.String({
+    maxLength: 100,
+    error: "SMS URL can be at most 100 characters",
+  }),
+  OrganizationSmsUsername: t.String({
+    maxLength: 30,
+    error: "SMS username can be at most 30 characters",
+  }),
+  OrganizationSmsPassword: t.String({
+    maxLength: 30,
+    error: "SMS password can be at most 30 characters",
+  }),
+  OrganizationSmsSenderId: t.String({
+    maxLength: 10,
+    error: "SMS sender id can be at most 10 characters",
+  }),
+  OrganizationSmsPort: t.String({
+    maxLength: 10,
+    error: "SMS port can be at most 10 characters",
+  }),
+  OrganizationOnDomain: t.Union([t.Literal(0), t.Literal(1)], {
+    error: "Domain must be on (1) or off (0)",
+  }),
+  OrganizationDomainURL: t.String({
+    maxLength: 100,
+    error: "Domain URL can be at most 100 characters",
+  }),
 };
 
 const OrganizationListItem = t.Object({
@@ -109,6 +218,8 @@ const OrganizationDetail = t.Composite([
     OrganizationSmsPassword: t.String(),
     OrganizationSmsSenderId: t.String(),
     OrganizationSmsPort: t.String(),
+    OrganizationOnDomain: t.Number(),
+    OrganizationDomainURL: t.String(),
   }),
 ]);
 
@@ -123,12 +234,20 @@ const CreateOrganizationBody = t.Object({
 // Each Edit tab sends only its own fields; add later tabs' fields here.
 const UpdateOrganizationBody = t.Partial(t.Object(fields));
 
-const IdParams = t.Object({ id: t.Numeric({ minimum: 1, error: "Invalid organization id" }) });
+const IdParams = t.Object({
+  id: t.Numeric({ minimum: 1, error: "Invalid organization id" }),
+});
 const NotFound = t.Object({ message: t.String() });
-const Unprocessable = t.Object({ message: t.String(), fields: t.Record(t.String(), t.String()) });
+const Unprocessable = t.Object({
+  message: t.String(),
+  fields: t.Record(t.String(), t.String()),
+});
 const notFound = { message: "Organization not found" };
 
-export const organizations = new Elysia({ prefix: "/organizations", tags: ["Organizations"] })
+export const organizations = new Elysia({
+  prefix: "/organizations",
+  tags: ["Organizations"],
+})
   .get(
     "/",
     async () => {
@@ -139,7 +258,10 @@ export const organizations = new Elysia({ prefix: "/organizations", tags: ["Orga
         .orderBy(asc(organization.OrganizationId));
       return rows.map(serialize);
     },
-    { response: t.Array(OrganizationListItem), detail: { summary: "List organizations" } },
+    {
+      response: t.Array(OrganizationListItem),
+      detail: { summary: "List organizations" },
+    },
   )
   .get(
     "/:id",
@@ -200,29 +322,52 @@ export const organizations = new Elysia({ prefix: "/organizations", tags: ["Orga
     "/:id",
     async ({ params, body, status }) => {
       const changes: Partial<typeof organization.$inferInsert> = {};
-      if (body.OrganizationName !== undefined) changes.OrganizationName = upper(body.OrganizationName);
-      if (body.OrganizationOwnerName !== undefined) changes.OrganizationOwnerName = upper(body.OrganizationOwnerName);
-      if (body.OrganizationMobile !== undefined) changes.OrganizationMobile = body.OrganizationMobile;
-      if (body.OrganizationAddress !== undefined) changes.OrganizationAddress = upper(body.OrganizationAddress);
-      if (body.OrganizationTheme !== undefined) changes.OrganizationTheme = body.OrganizationTheme;
-      if (body.OrganizationAppAccess !== undefined) changes.OrganizationAppAccess = body.OrganizationAppAccess;
-      if (body.OrganizationSms !== undefined) changes.OrganizationSms = body.OrganizationSms;
+      if (body.OrganizationName !== undefined)
+        changes.OrganizationName = upper(body.OrganizationName);
+      if (body.OrganizationOwnerName !== undefined)
+        changes.OrganizationOwnerName = upper(body.OrganizationOwnerName);
+      if (body.OrganizationMobile !== undefined)
+        changes.OrganizationMobile = body.OrganizationMobile;
+      if (body.OrganizationAddress !== undefined)
+        changes.OrganizationAddress = upper(body.OrganizationAddress);
+      if (body.OrganizationTheme !== undefined)
+        changes.OrganizationTheme = body.OrganizationTheme;
+      if (body.OrganizationAppAccess !== undefined)
+        changes.OrganizationAppAccess = body.OrganizationAppAccess;
+      if (body.OrganizationSms !== undefined)
+        changes.OrganizationSms = body.OrganizationSms;
       for (const key of Object.keys(smsFields) as (keyof typeof smsFields)[]) {
         const value = body[key];
         // The password is stored exactly as typed; the other SMS fields are trimmed.
-        if (value !== undefined) changes[key] = key === "OrganizationSmsPassword" ? value : value.trim();
+        if (value !== undefined)
+          changes[key] =
+            key === "OrganizationSmsPassword" ? value : value.trim();
       }
+      if (body.OrganizationOnDomain !== undefined)
+        changes.OrganizationOnDomain = body.OrganizationOnDomain;
+      if (body.OrganizationDomainURL !== undefined)
+        changes.OrganizationDomainURL =
+          body.OrganizationDomainURL.trim().toLowerCase();
       if (Object.keys(changes).length === 0) {
-        return status(422, { message: "Provide at least one field to update.", fields: {} });
+        return status(422, {
+          message: "Provide at least one field to update.",
+          fields: {},
+        });
       }
-      const touchesSms = "OrganizationSms" in changes || Object.keys(smsFields).some((key) => key in changes);
+      const touchesSms =
+        "OrganizationSms" in changes ||
+        Object.keys(smsFields).some((key) => key in changes);
+      const touchesDomain =
+        "OrganizationOnDomain" in changes || "OrganizationDomainURL" in changes;
       const where = and(eq(organization.OrganizationId, params.id), notDeleted);
 
       const result = await db.transaction(async (tx) => {
-        if (touchesSms) {
-          // Validate the SMS settings as they will be after this update (saved values + changes).
+        if (touchesSms || touchesDomain) {
+          // Validate the settings as they will be after this update (saved values + changes).
           const [current] = await tx
             .select({
+              OrganizationOnDomain: organization.OrganizationOnDomain,
+              OrganizationDomainURL: organization.OrganizationDomainURL,
               OrganizationSms: organization.OrganizationSms,
               OrganizationSmsUrl: organization.OrganizationSmsUrl,
               OrganizationSmsUsername: organization.OrganizationSmsUsername,
@@ -234,20 +379,36 @@ export const organizations = new Elysia({ prefix: "/organizations", tags: ["Orga
             .where(where)
             .for("update");
           if (!current) return { kind: "not-found" } as const;
-          const smsErrors = validateSms({ ...current, ...changes } as SmsSettings);
-          if (Object.keys(smsErrors).length > 0) return { kind: "invalid", fields: smsErrors } as const;
+          const next = { ...current, ...changes };
+          const errors = {
+            ...(touchesSms ? validateSms(next as SmsSettings) : {}),
+            ...(touchesDomain
+              ? await validateDomain(tx, params.id, next as DomainSettings)
+              : {}),
+          };
+          if (Object.keys(errors).length > 0)
+            return { kind: "invalid", fields: errors } as const;
         }
         const [row] = await tx
           .update(organization)
-          .set({ ...changes, UpdatedBy: SYSTEM_USER, UpdatedDate: sql`localtimestamp` })
+          .set({
+            ...changes,
+            UpdatedBy: SYSTEM_USER,
+            UpdatedDate: sql`localtimestamp`,
+          })
           .where(where)
           .returning(detailColumns);
-        return row ? ({ kind: "ok", row } as const) : ({ kind: "not-found" } as const);
+        return row
+          ? ({ kind: "ok", row } as const)
+          : ({ kind: "not-found" } as const);
       });
 
       if (result.kind === "not-found") return status(404, notFound);
       if (result.kind === "invalid") {
-        return status(422, { message: "Please correct the highlighted fields.", fields: result.fields });
+        return status(422, {
+          message: "Please correct the highlighted fields.",
+          fields: result.fields,
+        });
       }
       return serialize(result.row);
     },

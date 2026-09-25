@@ -13,6 +13,8 @@ export const organization = pgTable("organization", {
   OrganizationAppAccess: integer("OrganizationAppAccess").default(0),
   OrganizationMobile: varchar("OrganizationMobile", { length: 10 }).notNull(),
   OrganizationAddress: varchar("OrganizationAddress", { length: 60 }).notNull(),
+  OrganizationOnDomain: integer("OrganizationOnDomain").notNull().default(0),
+  OrganizationDomainURL: varchar("OrganizationDomainURL", { length: 100 }).notNull().default(""),
   OrganizationSms: varchar("OrganizationSms", { length: 1 }).notNull(),
   OrganizationSmsUrl: varchar("OrganizationSmsUrl", { length: 100 }).notNull(),
   OrganizationSmsUsername: varchar("OrganizationSmsUsername", { length: 30 }).notNull(),
