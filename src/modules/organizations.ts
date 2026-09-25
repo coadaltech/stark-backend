@@ -22,7 +22,7 @@ const listColumns = {
   AddedDate: organization.AddedDate,
 };
 
-// ---- Config tab settings -------------------------------------------------------
+// ---- Numeric settings (Config and Salary tabs) -------------------------------------------------------
 // One entry per column: its validation schema and the value to report when the legacy
 // column is NULL (the column default). Everything else (select, schemas, PATCH) derives from this.
 const flag = (label: string) =>
@@ -86,6 +86,9 @@ const configSettings = {
     schema: wholeNumber("Absent Ledger Lock Days", 0, 365),
     fallback: 0,
   },
+  // Salary tab
+  IsAutoSalaryCreate: { schema: flag("Auto Salary Create"), fallback: 0 },
+  IsAutoSalaryPaid: { schema: flag("Auto Salary Paid"), fallback: 0 },
   RoundOffOnMainJantri: {
     schema: wholeNumber("Main Jantri Round", 1, 10000),
     fallback: 50,

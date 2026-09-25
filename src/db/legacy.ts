@@ -40,6 +40,9 @@ export const organization = pgTable("organization", {
   UnPaidKistPopupForDashboard: integer("UnPaidKistPopupForDashboard").default(0),
   IsBackLimitPopup: smallint("IsBackLimitPopup").default(0),
   AbsentLedgerLockDays: integer("AbsentLedgerLockDays").default(0),
+  // Salary tab settings.
+  IsAutoSalaryCreate: smallint("IsAutoSalaryCreate").default(0),
+  IsAutoSalaryPaid: smallint("IsAutoSalaryPaid").default(0),
   OrganizationSms: varchar("OrganizationSms", { length: 1 }).notNull(),
   OrganizationSmsUrl: varchar("OrganizationSmsUrl", { length: 100 }).notNull(),
   OrganizationSmsUsername: varchar("OrganizationSmsUsername", { length: 30 }).notNull(),
