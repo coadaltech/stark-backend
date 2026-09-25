@@ -54,6 +54,10 @@ export const organization = pgTable("organization", {
   OrganizationStartDate: date("OrganizationStartDate", { mode: "string" }).notNull(),
   OrganizationEndDate: date("OrganizationEndDate", { mode: "string" }).notNull(),
   IsOrganizationAllow: varchar("IsOrganizationAllow", { length: 1 }).notNull(),
+  // Telegram tab.
+  TelegramAllow: smallint("TelegramAllow").default(0),
+  TelegramUrl: varchar("TelegramUrl", { length: 250 }).default(""),
+  TelegramSession: text("TelegramSession"),
   RecordStatus: char("RecordStatus", { length: 1 }).notNull(),
   AddedBy: varchar("AddedBy", { length: 30 }).notNull(),
   AddedDate: timestamp("AddedDate", { mode: "string" }).notNull(),

@@ -144,6 +144,10 @@ const detailColumns = {
   OrganizationOnDomain: organization.OrganizationOnDomain,
   OrganizationDomainURL: organization.OrganizationDomainURL,
   IsOrganizationAllow: organization.IsOrganizationAllow,
+  TelegramAllow:
+    sql<number>`coalesce(${organization.TelegramAllow}, 0)`.mapWith(Number),
+  TelegramUrl: sql<string>`coalesce(${organization.TelegramUrl}, '')`,
+  TelegramSession: sql<string>`coalesce(${organization.TelegramSession}, '')`,
   ...configColumns,
 };
 
@@ -249,6 +253,28 @@ function validateLicence(dates: LicenceDates) {
   ) {
     errors.OrganizationEndDate = "End date cannot be before start date";
   }
+  return errors;
+}
+
+// ---- Telegram ---------------------------------------------------------------------
+type TelegramSettings = {
+  TelegramAllow: number;
+  TelegramUrl: string;
+  TelegramSession: string;
+};
+
+/** While Telegram is allowed, it needs an http(s) URL and an access token. */
+function validateTelegram(telegram: TelegramSettings) {
+  const errors: Record<string, string> = {};
+  if (telegram.TelegramAllow !== 1) return errors;
+  if (!telegram.TelegramUrl)
+    errors.TelegramUrl = "Telegram URL is required when Telegram is allowed";
+  else if (!/^https?:\/\/\S+$/i.test(telegram.TelegramUrl)) {
+    errors.TelegramUrl = "Telegram URL must start with http:// or https://";
+  }
+  if (!telegram.TelegramSession)
+    errors.TelegramSession =
+      "Access token is required when Telegram is allowed";
   return errors;
 }
 
@@ -363,6 +389,17 @@ const fields = {
   IsOrganizationAllow: t.Union([t.Literal("0"), t.Literal("1")], {
     error: "Organization status must be active (1) or deactivated (0)",
   }),
+  TelegramAllow: t.Union([t.Literal(0), t.Literal(1)], {
+    error: "Telegram Allow must be 0 or 1",
+  }),
+  TelegramUrl: t.String({
+    maxLength: 250,
+    error: "Telegram URL can be at most 250 characters",
+  }),
+  TelegramSession: t.String({
+    maxLength: 10000,
+    error: "Access token can be at most 10000 characters",
+  }),
 };
 
 const OrganizationListItem = t.Object({
@@ -391,6 +428,9 @@ const OrganizationDetail = t.Composite([
     OrganizationOnDomain: t.Number(),
     OrganizationDomainURL: t.String(),
     IsOrganizationAllow: t.String(),
+    TelegramAllow: t.Number(),
+    TelegramUrl: t.String(),
+    TelegramSession: t.String(),
     ...configResponse,
   }),
 ]);
@@ -530,6 +570,13 @@ export const organizations = new Elysia({
         changes.OrganizationEndDate = body.OrganizationEndDate;
       if (body.IsOrganizationAllow !== undefined)
         changes.IsOrganizationAllow = body.IsOrganizationAllow;
+      if (body.TelegramAllow !== undefined)
+        changes.TelegramAllow = body.TelegramAllow;
+      if (body.TelegramUrl !== undefined)
+        changes.TelegramUrl = body.TelegramUrl.trim();
+      // Long tokens often pick up spaces/line breaks when copied; a token never contains whitespace.
+      if (body.TelegramSession !== undefined)
+        changes.TelegramSession = body.TelegramSession.replace(/\s+/g, "");
       if (Object.keys(changes).length === 0) {
         return status(422, {
           message: "Provide at least one field to update.",
@@ -544,14 +591,29 @@ export const organizations = new Elysia({
       const touchesLicence = Object.keys(licenceFields).some(
         (key) => key in changes,
       );
+      const touchesTelegram =
+        "TelegramAllow" in changes ||
+        "TelegramUrl" in changes ||
+        "TelegramSession" in changes;
       const where = and(eq(organization.OrganizationId, params.id), notDeleted);
 
       const result = await db
         .transaction(async (tx) => {
-          if (touchesSms || touchesDomain || touchesLicence) {
+          if (
+            touchesSms ||
+            touchesDomain ||
+            touchesLicence ||
+            touchesTelegram
+          ) {
             // Validate the settings as they will be after this update (saved values + changes).
             const [current] = await tx
               .select({
+                TelegramAllow:
+                  sql<number>`coalesce(${organization.TelegramAllow}, 0)`.mapWith(
+                    Number,
+                  ),
+                TelegramUrl: sql<string>`coalesce(${organization.TelegramUrl}, '')`,
+                TelegramSession: sql<string>`coalesce(${organization.TelegramSession}, '')`,
                 OrganizationStartDate: organization.OrganizationStartDate,
                 OrganizationEndDate: organization.OrganizationEndDate,
                 OrganizationOnDomain: organization.OrganizationOnDomain,
@@ -571,6 +633,9 @@ export const organizations = new Elysia({
             const errors = {
               ...(touchesSms ? validateSms(next as SmsSettings) : {}),
               ...(touchesLicence ? validateLicence(next as LicenceDates) : {}),
+              ...(touchesTelegram
+                ? validateTelegram(next as TelegramSettings)
+                : {}),
               ...(touchesDomain
                 ? await validateDomain(tx, params.id, next as DomainSettings)
                 : {}),
