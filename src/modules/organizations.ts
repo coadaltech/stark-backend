@@ -95,6 +95,23 @@ async function validateDomain(
     : {};
 }
 
+/** True if the error is the unique-domain index rejecting a duplicate (e.g. two saves racing). */
+function isDuplicateDomainError(error: unknown): boolean {
+  for (
+    let e: unknown = error;
+    e && typeof e === "object";
+    e = (e as { cause?: unknown }).cause
+  ) {
+    const pg = e as { code?: string; constraint_name?: string };
+    if (
+      pg.code === "23505" &&
+      pg.constraint_name === "organization_domain_url_key"
+    )
+      return true;
+  }
+  return false;
+}
+
 function validateSms(sms: SmsSettings) {
   const errors: Record<string, string> = {};
   if (sms.OrganizationSms !== "1") return errors;
@@ -361,47 +378,58 @@ export const organizations = new Elysia({
         "OrganizationOnDomain" in changes || "OrganizationDomainURL" in changes;
       const where = and(eq(organization.OrganizationId, params.id), notDeleted);
 
-      const result = await db.transaction(async (tx) => {
-        if (touchesSms || touchesDomain) {
-          // Validate the settings as they will be after this update (saved values + changes).
-          const [current] = await tx
-            .select({
-              OrganizationOnDomain: organization.OrganizationOnDomain,
-              OrganizationDomainURL: organization.OrganizationDomainURL,
-              OrganizationSms: organization.OrganizationSms,
-              OrganizationSmsUrl: organization.OrganizationSmsUrl,
-              OrganizationSmsUsername: organization.OrganizationSmsUsername,
-              OrganizationSmsPassword: organization.OrganizationSmsPassword,
-              OrganizationSmsSenderId: organization.OrganizationSmsSenderId,
-              OrganizationSmsPort: organization.OrganizationSmsPort,
+      const result = await db
+        .transaction(async (tx) => {
+          if (touchesSms || touchesDomain) {
+            // Validate the settings as they will be after this update (saved values + changes).
+            const [current] = await tx
+              .select({
+                OrganizationOnDomain: organization.OrganizationOnDomain,
+                OrganizationDomainURL: organization.OrganizationDomainURL,
+                OrganizationSms: organization.OrganizationSms,
+                OrganizationSmsUrl: organization.OrganizationSmsUrl,
+                OrganizationSmsUsername: organization.OrganizationSmsUsername,
+                OrganizationSmsPassword: organization.OrganizationSmsPassword,
+                OrganizationSmsSenderId: organization.OrganizationSmsSenderId,
+                OrganizationSmsPort: organization.OrganizationSmsPort,
+              })
+              .from(organization)
+              .where(where)
+              .for("update");
+            if (!current) return { kind: "not-found" } as const;
+            const next = { ...current, ...changes };
+            const errors = {
+              ...(touchesSms ? validateSms(next as SmsSettings) : {}),
+              ...(touchesDomain
+                ? await validateDomain(tx, params.id, next as DomainSettings)
+                : {}),
+            };
+            if (Object.keys(errors).length > 0)
+              return { kind: "invalid", fields: errors } as const;
+          }
+          const [row] = await tx
+            .update(organization)
+            .set({
+              ...changes,
+              UpdatedBy: SYSTEM_USER,
+              UpdatedDate: sql`localtimestamp`,
             })
-            .from(organization)
             .where(where)
-            .for("update");
-          if (!current) return { kind: "not-found" } as const;
-          const next = { ...current, ...changes };
-          const errors = {
-            ...(touchesSms ? validateSms(next as SmsSettings) : {}),
-            ...(touchesDomain
-              ? await validateDomain(tx, params.id, next as DomainSettings)
-              : {}),
-          };
-          if (Object.keys(errors).length > 0)
-            return { kind: "invalid", fields: errors } as const;
-        }
-        const [row] = await tx
-          .update(organization)
-          .set({
-            ...changes,
-            UpdatedBy: SYSTEM_USER,
-            UpdatedDate: sql`localtimestamp`,
-          })
-          .where(where)
-          .returning(detailColumns);
-        return row
-          ? ({ kind: "ok", row } as const)
-          : ({ kind: "not-found" } as const);
-      });
+            .returning(detailColumns);
+          return row
+            ? ({ kind: "ok", row } as const)
+            : ({ kind: "not-found" } as const);
+        })
+        .catch((error: unknown) => {
+          if (!isDuplicateDomainError(error)) throw error;
+          return {
+            kind: "invalid",
+            fields: {
+              OrganizationDomainURL:
+                "Domain is already used by another organization",
+            },
+          } as const;
+        });
 
       if (result.kind === "not-found") return status(404, notFound);
       if (result.kind === "invalid") {
