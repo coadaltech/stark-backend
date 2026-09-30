@@ -35,7 +35,7 @@ BEGIN
                 , any_value(lm."LoginType") AS "LoginType", any_value(role."RoleId") AS "RoleId", any_value(role."RoleName") AS "RoleName"
             FROM "transaction_detail" td
             JOIN "transaction" t ON td."TransactionId" = t."TransactionId"
-            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" != 'D'
+            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = t."OrganizationId" AND lm."RecordStatus" != 'D'
             LEFT JOIN "role" role ON role."RoleId" = lm."LoginType" AND role."RecordStatus" != 'D' AND role."OrganizationId" = varOrganizationId
             WHERE (td."RecordStatus" != 'D')
               AND (t."RecordStatus" != 'D')
@@ -52,7 +52,7 @@ BEGIN
                 , any_value(lm."LoginType") AS "LoginType", any_value(role."RoleId") AS "RoleId", any_value(role."RoleName") AS "RoleName"
             FROM "transaction_detail_declare" td
             JOIN "transaction_declare" t ON td."TransactionId" = t."TransactionId"
-            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" != 'D'
+            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = t."OrganizationId" AND lm."RecordStatus" != 'D'
             LEFT JOIN "role" role ON role."RoleId" = lm."LoginType" AND role."RecordStatus" != 'D' AND role."OrganizationId" = varOrganizationId
             WHERE (td."RecordStatus" != 'D')
               AND (t."RecordStatus" != 'D')
@@ -80,7 +80,7 @@ BEGIN
                 , any_value(lm."LoginType") AS "LoginType", any_value(role."RoleId") AS "RoleId", any_value(role."RoleName") AS "RoleName"
             FROM "transaction_detail" td
             JOIN "transaction" t ON td."TransactionId" = t."TransactionId"
-            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" != 'D'
+            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = t."OrganizationId" AND lm."RecordStatus" != 'D'
             LEFT JOIN "role" role ON role."RoleId" = lm."LoginType" AND role."RecordStatus" != 'D' AND role."OrganizationId" = varOrganizationId
             WHERE (td."RecordStatus" != 'D')
               AND (t."RecordStatus" != 'D')
@@ -95,7 +95,7 @@ BEGIN
                 , any_value(lm."LoginType") AS "LoginType", any_value(role."RoleId") AS "RoleId", any_value(role."RoleName") AS "RoleName"
             FROM "transaction_detail_declare" td
             JOIN "transaction_declare" t ON td."TransactionId" = t."TransactionId"
-            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" != 'D'
+            JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = t."OrganizationId" AND lm."RecordStatus" != 'D'
             LEFT JOIN "role" role ON role."RoleId" = lm."LoginType" AND role."RecordStatus" != 'D' AND role."OrganizationId" = varOrganizationId
             WHERE (td."RecordStatus" != 'D')
               AND (t."RecordStatus" != 'D')

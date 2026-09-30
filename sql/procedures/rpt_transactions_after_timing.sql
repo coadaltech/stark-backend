@@ -53,7 +53,7 @@ BEGIN
                 to_char(t."TransactionDate", 'YYYY-MM-DD') || ' ' || st."EndTime"
            END) AS "AllowTime"
     FROM "transaction_declare" AS t
-    INNER JOIN "login" lg ON t."UpdatedBy" = lg."UserName" AND lg."LoginType" = 5
+    INNER JOIN "login" lg ON t."UpdatedBy" = lg."UserName" AND lg."OrganizationId" = t."OrganizationId" AND lg."LoginType" = 5
     INNER JOIN "shift_timing" st ON st."ShiftId" = t."ShiftId" AND st."RoleId" = 5
     INNER JOIN "shift" s ON t."ShiftId" = s."ShiftId"
     WHERE t."TransactionDate" BETWEEN varFromDate AND varToDate
@@ -73,7 +73,7 @@ BEGIN
                 to_char(t."TransactionDate", 'YYYY-MM-DD') || ' ' || st."EndTime"
            END) AS "AllowTime"
     FROM "transaction" AS t
-    INNER JOIN "login" lg ON t."UpdatedBy" = lg."UserName" AND lg."LoginType" = 5
+    INNER JOIN "login" lg ON t."UpdatedBy" = lg."UserName" AND lg."OrganizationId" = t."OrganizationId" AND lg."LoginType" = 5
     INNER JOIN "shift_timing" st ON st."ShiftId" = t."ShiftId" AND st."RoleId" = 5
     INNER JOIN "shift" s ON t."ShiftId" = s."ShiftId"
     WHERE t."TransactionDate" BETWEEN varFromDate AND varToDate

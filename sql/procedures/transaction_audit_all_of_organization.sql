@@ -80,7 +80,7 @@ varModifyStatus -1 All 0 & 1 by ModifyStatus
           AND tr."RecordStatus" != 'D'
     ) AS t
     LEFT JOIN "transaction_audit" ta ON ta."TransactionId" = t."TransactionId"::bigint AND ta."RecordStatus" != 'D'
-    INNER JOIN "login" lg ON lg."UserName" = t."AddedBy"
+    INNER JOIN "login" lg ON lg."UserName" = t."AddedBy" AND lg."OrganizationId" = varOrganizationId
     WHERE (CASE WHEN varIsAudit = 1 THEN (ta."TransactionAuditId" IS NULL OR COALESCE(ta."MistakeStatus", 0) = 2)
                 WHEN varIsAudit = 2 THEN ta."TransactionAuditId" IS NOT NULL
                 ELSE true END)

@@ -76,7 +76,7 @@ BEGIN
 			,t."TransactionDate", t."ShiftId", t."OrganizationId"
 			FROM "transaction_detail" td
 			JOIN "transaction" t ON td."TransactionId" = t."TransactionId"
-			JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" <> 'D'
+			JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = t."OrganizationId" AND lm."RecordStatus" <> 'D'
 			LEFT JOIN "role" role ON role."RoleId" = lm."LoginType" AND role."RecordStatus" <> 'D' AND role."OrganizationId" = varOrganizationId
 			WHERE (td."RecordStatus" <> 'D')
 			AND (t."RecordStatus" <> 'D')
@@ -99,7 +99,7 @@ BEGIN
 			,t."TransactionDate", t."ShiftId", t."OrganizationId"
 			FROM "transaction_detail_declare" td
 			JOIN "transaction_declare" t ON td."TransactionId" = t."TransactionId"
-			JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" <> 'D'
+			JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = t."OrganizationId" AND lm."RecordStatus" <> 'D'
 			LEFT JOIN "role" role ON role."RoleId" = lm."LoginType" AND role."RecordStatus" <> 'D' AND role."OrganizationId" = varOrganizationId
 			WHERE (td."RecordStatus" <> 'D')
 			AND (t."RecordStatus" <> 'D')

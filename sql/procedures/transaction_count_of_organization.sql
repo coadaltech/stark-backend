@@ -23,7 +23,7 @@ BEGIN
 		FROM "transaction" t
 		JOIN "ledger" l ON t."LedgerId" = l."LedgerId" AND coalesce(l."ParentLedgerId", 0) = 0
 		JOIN "shift" shift ON shift."ShiftId" = t."ShiftId"
-		JOIN "login" login ON login."UserName" = t."AddedBy"
+		JOIN "login" login ON login."UserName" = t."AddedBy" AND login."OrganizationId" = t."OrganizationId"
 		WHERE t."OrganizationId" = varOrganizationId
 		AND t."TransactionDate" = varShiftDate
 		AND (coalesce(varShiftId, 0) = 0 OR t."ShiftId" = varShiftId)
@@ -38,7 +38,7 @@ BEGIN
 		FROM "transaction_declare" t
 		JOIN "ledger" l ON t."LedgerId" = l."LedgerId" AND coalesce(l."ParentLedgerId", 0) = 0
 		JOIN "shift" shift ON shift."ShiftId" = t."ShiftId"
-		JOIN "login" login ON login."UserName" = t."AddedBy"
+		JOIN "login" login ON login."UserName" = t."AddedBy" AND login."OrganizationId" = t."OrganizationId"
 		WHERE t."OrganizationId" = varOrganizationId
 		AND t."TransactionDate" = varShiftDate
 		AND (coalesce(varShiftId, 0) = 0 OR t."ShiftId" = varShiftId)

@@ -47,7 +47,7 @@ BEGIN
                 AND ta."OrganizationId" = varOrganizationId
               GROUP BY ta."AddedBy", ta."LedgerId"
              ) AS t
-        JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."RecordStatus" != 'D'
+        JOIN "login" lm ON lm."UserName" = t."AddedBy" AND lm."OrganizationId" = varOrganizationId AND lm."RecordStatus" != 'D'
         LEFT JOIN "role" r ON r."RoleId" = lm."LoginType" AND r."RecordStatus" != 'D' AND r."OrganizationId" = varOrganizationId
             AND lm."LoginType" NOT IN (3, 4, 5)
     ) AS aa

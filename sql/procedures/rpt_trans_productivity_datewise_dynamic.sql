@@ -88,7 +88,7 @@ BEGIN
           AND (t."AddedBy" = %4$L OR %4$L = '''')
         GROUP BY t."AddedBy", t."ShiftDate"
     ) AS aa
-    JOIN "login" lm ON lm."UserName" = aa."AddedBy" AND lm."RecordStatus" != ''D''
+    JOIN "login" lm ON lm."UserName" = aa."AddedBy" AND lm."OrganizationId" = %3$L::bigint AND lm."RecordStatus" != ''D''
     LEFT JOIN "role" r ON r."RoleId" = lm."LoginType" AND r."RecordStatus" != ''D'' AND r."OrganizationId" = %3$L::bigint
     WHERE lm."LoginType" NOT IN (1, 3, 4, 5)
     GROUP BY aa."AddedBy",
