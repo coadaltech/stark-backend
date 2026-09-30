@@ -3,6 +3,8 @@ import { and, asc, eq, ne, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { organization } from "../db/legacy";
 import { developerGuard } from "../auth/guard";
+import { env } from "../env";
+import { isValidHost } from "../sites/host";
 
 // Allowed values; keep in sync with the frontend select options.
 const THEMES = ["Green"] as const;
@@ -162,17 +164,16 @@ type SmsSettings = { OrganizationSms: string } & Record<
   string
 >;
 
-// Bare host name, e.g. "lgaikhai.com" or "app.lgaikhai.com" (no scheme, path or port).
-// const DOMAIN_PATTERN =
-//   /^(?=.{1,100}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type DomainSettings = {
   OrganizationOnDomain: number;
   OrganizationDomainURL: string;
 };
 
-/** Domain is required while ON, must be a bare host name, and can belong to only one organization. */
+/**
+ * Domain is required while ON, must be a host name with an optional port (it is matched against the
+ * request's Host header), can't be the main app's host, and can belong to only one organization.
+ */
 async function validateDomain(
   tx: Tx,
   organizationId: number,
@@ -184,9 +185,15 @@ async function validateDomain(
       ? { OrganizationDomainURL: "Domain URL is required when Domain is on" }
       : {};
   }
-  // if (!DOMAIN_PATTERN.test(url)) {
-  //   return { OrganizationDomainURL: "Enter a domain like example.com (no http://, path or port)" };
-  // }
+  if (!isValidHost(url)) {
+    return {
+      OrganizationDomainURL:
+        "Enter a domain like example.com or acme.localhost:3000 (no http:// or path)",
+    };
+  }
+  if (url === env.MAIN_APP_HOST) {
+    return { OrganizationDomainURL: "This domain is reserved for the main app" };
+  }
   const [taken] = await tx
     .select({ OrganizationName: organization.OrganizationName })
     .from(organization)
