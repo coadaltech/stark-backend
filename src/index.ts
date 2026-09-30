@@ -4,6 +4,7 @@ import { openapi } from "@elysiajs/openapi";
 import { sql } from "drizzle-orm";
 import { db } from "./db";
 import { env } from "./env";
+import { auth } from "./modules/auth";
 import { organizations } from "./modules/organizations";
 
 export const app = new Elysia()
@@ -26,6 +27,7 @@ export const app = new Elysia()
     await db.execute(sql`select 1`);
     return { status: "ok", db: "up" };
   })
+  .use(auth)
   .use(organizations)
   .listen(env.PORT);
 

@@ -17,3 +17,7 @@ CREATE TABLE IF NOT EXISTS "auth_session" (
 );
 
 CREATE INDEX IF NOT EXISTS "auth_session_login_idx" ON "auth_session" ("LoginId");
+
+-- The site a session belongs to: "main" for the main app (layer 03); organization sites in layer 08.
+-- A refresh keeps the session's site; tokens carry the same value.
+ALTER TABLE "auth_session" ADD COLUMN IF NOT EXISTS "Site" varchar(255) NOT NULL DEFAULT 'main';
