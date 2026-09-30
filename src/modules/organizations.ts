@@ -2,9 +2,7 @@ import { Elysia, t } from "elysia";
 import { and, asc, eq, ne, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { organization } from "../db/legacy";
-
-// Until auth exists, records are attributed to the system user.
-const SYSTEM_USER = "SYSTEM";
+import { developerGuard } from "../auth/guard";
 
 // Allowed values; keep in sync with the frontend select options.
 const THEMES = ["Green"] as const;
@@ -456,10 +454,13 @@ const Unprocessable = t.Object({
 });
 const notFound = { message: "Organization not found" };
 
+// Organization management is for developers on the main app only (401 / 403 otherwise).
+// Changes are attributed to the signed-in user.
 export const organizations = new Elysia({
   prefix: "/organizations",
   tags: ["Organizations"],
 })
+  .use(developerGuard)
   .get(
     "/",
     async () => {
@@ -492,37 +493,44 @@ export const organizations = new Elysia({
   )
   .post(
     "/",
-    async ({ body, status }) => {
-      const [row] = await db
-        .insert(organization)
-        .values({
-          OrganizationName: upper(body.OrganizationName),
-          OrganizationOwnerName: upper(body.OrganizationOwnerName),
-          OrganizationMobile: body.OrganizationMobile,
-          OrganizationAddress: upper(body.OrganizationAddress),
-          OrganizationTheme: body.OrganizationTheme,
-          // Not captured by the add form yet; legacy columns are NOT NULL.
-          OrganizationLogoColor: "",
-          OrganizationSms: "0",
-          OrganizationSmsUrl: "",
-          OrganizationSmsUsername: "",
-          OrganizationSmsPassword: "",
-          OrganizationSmsPort: "",
-          OrganizationSmsSenderId: "",
-          OrganizationSmsToken: "",
-          IsTransactionEnable: "1",
-          IsOrganizationAllow: "1",
-          // One-year subscription from today, as in the legacy data.
-          OrganizationStartDate: sql`current_date`,
-          OrganizationEndDate: sql`(current_date + interval '1 year')::date`,
-          RecordStatus: "A",
-          AddedBy: SYSTEM_USER,
-          AddedDate: sql`localtimestamp`,
-          UpdatedBy: SYSTEM_USER,
-          UpdatedDate: sql`localtimestamp`,
-        })
-        .returning(listColumns);
-      return status(201, serialize(row!));
+    async ({ body, status, user }) => {
+      // The organization and its default roles (sql/004_roles.sql) are created together.
+      const row = await db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(organization)
+          .values({
+            OrganizationName: upper(body.OrganizationName),
+            OrganizationOwnerName: upper(body.OrganizationOwnerName),
+            OrganizationMobile: body.OrganizationMobile,
+            OrganizationAddress: upper(body.OrganizationAddress),
+            OrganizationTheme: body.OrganizationTheme,
+            // Not captured by the add form yet; legacy columns are NOT NULL.
+            OrganizationLogoColor: "",
+            OrganizationSms: "0",
+            OrganizationSmsUrl: "",
+            OrganizationSmsUsername: "",
+            OrganizationSmsPassword: "",
+            OrganizationSmsPort: "",
+            OrganizationSmsSenderId: "",
+            OrganizationSmsToken: "",
+            IsTransactionEnable: "1",
+            IsOrganizationAllow: "1",
+            // One-year subscription from today, as in the legacy data.
+            OrganizationStartDate: sql`current_date`,
+            OrganizationEndDate: sql`(current_date + interval '1 year')::date`,
+            RecordStatus: "A",
+            AddedBy: user.userName,
+            AddedDate: sql`localtimestamp`,
+            UpdatedBy: user.userName,
+            UpdatedDate: sql`localtimestamp`,
+          })
+          .returning(listColumns);
+        await tx.execute(
+          sql`call "assign_default_roles"(${created!.OrganizationId})`,
+        );
+        return created!;
+      });
+      return status(201, serialize(row));
     },
     {
       body: CreateOrganizationBody,
@@ -532,7 +540,7 @@ export const organizations = new Elysia({
   )
   .patch(
     "/:id",
-    async ({ params, body, status }) => {
+    async ({ params, body, status, user }) => {
       const changes: Partial<typeof organization.$inferInsert> = {};
       if (body.OrganizationName !== undefined)
         changes.OrganizationName = upper(body.OrganizationName);
@@ -647,7 +655,7 @@ export const organizations = new Elysia({
             .update(organization)
             .set({
               ...changes,
-              UpdatedBy: SYSTEM_USER,
+              UpdatedBy: user.userName,
               UpdatedDate: sql`localtimestamp`,
             })
             .where(where)
