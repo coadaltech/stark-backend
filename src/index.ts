@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import { db } from "./db";
 import { env } from "./env";
 import { auth } from "./modules/auth";
+import { organizationSite } from "./modules/organization-site";
 import { organizations } from "./modules/organizations";
 import { sites } from "./modules/sites";
 
@@ -31,6 +32,7 @@ export const app = new Elysia()
   .use(auth)
   .use(organizations)
   .use(sites)
+  .use(organizationSite)
   .listen(env.PORT);
 
 export type App = typeof app;

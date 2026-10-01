@@ -1,7 +1,16 @@
 import { Elysia, t } from "elysia";
-import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
-import { authSession, login, organization, role, sysRole } from "../db/legacy";
+import { authSession, login } from "../db/legacy";
+import {
+  accountsOfSite,
+  denial,
+  selectAccount,
+  siteOfHost,
+  siteStillValid,
+  type Account,
+  type SessionSite,
+} from "../auth/access";
 import { authGuard } from "../auth/guard";
 import {
   issueAccessToken,
@@ -11,18 +20,10 @@ import {
   verifyRefreshToken,
   type AuthUser,
 } from "../auth/tokens";
-import { normalizeHost } from "../sites/host";
-import { resolveHost } from "../sites/resolve";
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-const DEVELOPER_ROLE_ID = 1;
 /** A refresh token replaced less than this long ago is still accepted (parallel refreshes). */
 const ROTATION_GRACE_MS = 30_000;
 const INVALID_CREDENTIALS = "Invalid username or password.";
-const INACTIVE = "Your account is inactive. Please contact your administrator.";
-const ORGANIZATION_INACTIVE = "This organization is inactive. Please contact your administrator.";
-const ROLE_NO_WEB = "Your role can't sign in on the web.";
 const SESSION_ENDED = "Your session has ended. Please sign in again.";
 
 // Checked when the username isn't found, so response time doesn't reveal which usernames exist.
@@ -30,99 +31,6 @@ const DUMMY_HASH = await Bun.password.hash(crypto.randomUUID(), {
   algorithm: "bcrypt",
   cost: 10,
 });
-
-type Account = {
-  LoginId: number;
-  UserName: string;
-  LoginName: string;
-  Password: string;
-  LoginType: number;
-  OrganizationId: number | null;
-  AccountStatus: string;
-  RoleName: string;
-  /** The account's role in its organization allows web sign-in (staff only). */
-  RoleWebLogin: boolean;
-  /** The account's organization is active (staff only). */
-  OrganizationActive: boolean;
-};
-
-/** The site a session is for: "main", or an organization site's host plus its organization. */
-type SessionSite = { site: string; siteOrganizationId: number | null };
-
-/** The session site for a host, or null if the host isn't a site. */
-async function siteOfHost(host: string): Promise<SessionSite | null> {
-  const resolved = await resolveHost(host);
-  if (!resolved) return null;
-  return resolved.kind === "main"
-    ? { site: MAIN_SITE, siteOrganizationId: null }
-    : { site: normalizeHost(host), siteOrganizationId: resolved.organizationId };
-}
-
-/** An organization session's host must still resolve to the same organization (Domain ON, not deleted). */
-async function siteStillValid(site: SessionSite): Promise<boolean> {
-  if (site.site === MAIN_SITE) return site.siteOrganizationId === null;
-  const resolved = await resolveHost(site.site);
-  return resolved?.kind === "organization" && resolved.organizationId === site.siteOrganizationId;
-}
-
-function selectAccount(executor: typeof db | Tx) {
-  return executor
-    .select({
-      LoginId: login.LoginId,
-      UserName: login.UserName,
-      LoginName: login.LoginName,
-      Password: login.Password,
-      LoginType: login.LoginType,
-      OrganizationId: login.OrganizationId,
-      AccountStatus: login.AccountStatus,
-      RoleName: sql<string>`coalesce(${sysRole.RoleName}, '')`,
-      RoleWebLogin: sql<boolean>`coalesce(${role.IsWebLogin}, 0) = 1`,
-      OrganizationActive: sql<boolean>`coalesce(${organization.IsOrganizationAllow}, '0') = '1'`,
-    })
-    .from(login)
-    .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
-    // The role as configured for the account's organization (IsWebLogin lives there).
-    .leftJoin(
-      role,
-      and(
-        eq(role.OrganizationId, login.OrganizationId),
-        eq(role.RoleId, login.LoginType),
-        ne(role.RecordStatus, "D"),
-      ),
-    )
-    .leftJoin(organization, eq(organization.OrganizationId, login.OrganizationId))
-    .$dynamic();
-}
-
-const isDeveloperAccount = (account: Account) =>
-  account.OrganizationId === null && account.LoginType === DEVELOPER_ROLE_ID;
-
-/**
- * Why a matched account (correct password) may not use the site, or null if it may (spec §5.2).
- * Developers are always allowed (while active); staff also need a web-login role and an active
- * organization.
- */
-function denial(account: Account): { reason: string; message: string } | null {
-  if (account.AccountStatus !== "1") return { reason: "inactive", message: INACTIVE };
-  if (isDeveloperAccount(account)) return null;
-  if (!account.OrganizationActive) return { reason: "organization", message: ORGANIZATION_INACTIVE };
-  if (!account.RoleWebLogin) return { reason: "role", message: ROLE_NO_WEB };
-  return null;
-}
-
-/**
- * Accounts that can sign in to a site (before the per-account checks in `denial`). Main app:
- * developers only. Organization site: developers, or that organization's accounts. Usernames are unique
- * per organization and developer usernames are reserved, so a username matches at most one of these.
- */
-function accountsOfSite(site: SessionSite) {
-  const developer = and(isNull(login.OrganizationId), eq(login.LoginType, DEVELOPER_ROLE_ID));
-  const scope =
-    site.siteOrganizationId === null
-      ? developer
-      : or(developer, eq(login.OrganizationId, site.siteOrganizationId));
-  return and(scope, ne(login.RecordStatus, "D"));
-}
 
 const toAuthUser = (
   account: Account,

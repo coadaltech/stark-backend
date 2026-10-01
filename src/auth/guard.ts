@@ -1,7 +1,8 @@
 import { Elysia } from "elysia";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
-import { authSession } from "../db/legacy";
+import { authSession, login } from "../db/legacy";
+import { accountsOfSite, denial, selectAccount, siteStillValid } from "./access";
 import { MAIN_SITE, verifyAccessToken, type AuthUser } from "./tokens";
 
 const DEVELOPER_ROLE_ID = 1;
@@ -60,5 +61,28 @@ export const developerGuard = new Elysia({ name: "developer-guard" }).derive(
     if (!user) return status(401, unauthorized);
     if (!isPlatformDeveloper(user)) return status(403, forbidden);
     return { user };
+  },
+);
+
+/**
+ * Organization-site work: signed in on an organization site, the site still exists for that
+ * organization, and the account is still allowed there (spec §5.2) — checked on every call, so
+ * deactivating an organization or turning its Domain off takes effect at once, not after the access
+ * token expires. Handlers get `user` and `organizationId` (the site's organization).
+ */
+export const organizationSiteGuard = new Elysia({ name: "organization-site-guard" }).derive(
+  { as: "scoped" },
+  async ({ headers, status }) => {
+    const user = await authenticate(headers.authorization);
+    if (!user) return status(401, unauthorized);
+    const organizationId = user.siteOrganizationId;
+    if (organizationId === null) return status(403, forbidden);
+    const site = { site: user.site, siteOrganizationId: organizationId };
+    if (!(await siteStillValid(site))) return status(401, unauthorized);
+    const [account] = await selectAccount(db)
+      .where(and(eq(login.LoginId, user.loginId), accountsOfSite(site)))
+      .limit(1);
+    if (!account || denial(account)) return status(401, unauthorized);
+    return { user, organizationId };
   },
 );
