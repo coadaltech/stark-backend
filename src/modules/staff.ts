@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
-import { and, asc, desc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db";
-import { login, role, sysRole } from "../db/legacy";
+import { authSession, login, role, sysRole } from "../db/legacy";
 import { staffManagerGuard } from "../auth/guard";
 import type { Tx } from "../auth/access";
 
@@ -49,6 +49,24 @@ function creatableRoles(
     )
     .orderBy(asc(sysRole.RolePriority));
 }
+
+/**
+ * Whether the caller may edit a staff member with role `targetRoleId`: strictly below the caller by
+ * priority (the same rule as creating; so never yourself, your peers or anyone above you).
+ */
+async function canEditRole(executor: typeof db | Tx, callerRoleId: number, targetRoleId: number) {
+  const [row] = await executor
+    .select({ ok: sql<boolean>`target."RolePriority" > caller."RolePriority"` })
+    .from(sql`"sys_role" caller, "sys_role" target`)
+    .where(sql`caller."RoleId" = ${callerRoleId} and target."RoleId" = ${targetRoleId}`);
+  return row?.ok === true;
+}
+
+/** Stored as "NAME STAFF A/C"; a name typed with the suffix already isn't suffixed twice. */
+const staffName = (typed: string) => {
+  const name = upper(typed);
+  return name.endsWith(NAME_SUFFIX) ? name : name + NAME_SUFFIX;
+};
 
 const listColumns = {
   LoginId: login.LoginId,
@@ -121,6 +139,20 @@ const CreateStaffBody = t.Object({
     t.String({ maxLength: 50, error: "Address can be at most 50 characters" }),
   ),
 });
+
+const UpdateStaffBody = t.Object({
+  LoginName: t.Optional(CreateStaffBody.properties.LoginName),
+  LoginType: t.Optional(CreateStaffBody.properties.LoginType),
+  StaffWorkMode: t.Optional(CreateStaffBody.properties.StaffWorkMode),
+  Mobile: t.Optional(CreateStaffBody.properties.Mobile),
+  Address: t.Optional(t.String({ maxLength: 50, error: "Address can be at most 50 characters" })),
+  AccountStatus: t.Optional(t.Union([t.Literal("1"), t.Literal("0")], { error: "Status must be active (1) or inactive (0)" })),
+});
+
+const StaffDetail = t.Composite([StaffItem, t.Object({ canEdit: t.Boolean() })]);
+const IdParams = t.Object({ id: t.Numeric({ minimum: 1, error: "Invalid staff id" }) });
+const NOT_FOUND = { message: "Staff member not found" };
+const CANT_EDIT = { message: "You can only edit staff below your own role." };
 
 /** True if the error is one of the username rules rejecting a duplicate (e.g. two saves racing). */
 function isUsernameTaken(error: unknown): boolean {
@@ -213,7 +245,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
             .values({
               OrganizationId: organizationId,
               LedgerId: 0,
-              LoginName: upper(body.LoginName) + NAME_SUFFIX,
+              LoginName: staffName(body.LoginName),
               UserName: userName,
               Password: await Bun.password.hash(body.Password, {
                 algorithm: "bcrypt",
@@ -259,5 +291,85 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
       detail: {
         summary: "Add a staff member to the signed-in organization site",
       },
+    },
+  )
+  .get(
+    "/:id",
+    async ({ params, organizationId, user, status }) => {
+      const [row] = await db
+        .select(listColumns)
+        .from(login)
+        .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+        .where(and(eq(login.LoginId, params.id), eq(login.OrganizationId, organizationId), ne(login.RecordStatus, "D")));
+      if (!row) return status(404, NOT_FOUND);
+      return { ...serialize(row), canEdit: await canEditRole(db, user.roleId, row.LoginType) };
+    },
+    {
+      params: IdParams,
+      response: { 200: StaffDetail, 404: Message },
+      detail: { summary: "One staff member of the site, and whether the signed-in user may edit them" },
+    },
+  )
+  .patch(
+    "/:id",
+    async ({ params, body, organizationId, user, status }) => {
+      const changes: Partial<typeof login.$inferInsert> = {};
+      if (body.LoginName !== undefined) changes.LoginName = staffName(body.LoginName);
+      if (body.LoginType !== undefined) changes.LoginType = body.LoginType;
+      if (body.StaffWorkMode !== undefined) changes.StaffWorkMode = body.StaffWorkMode;
+      if (body.Mobile !== undefined) changes.Mobile = body.Mobile;
+      if (body.Address !== undefined) changes.Address = upper(body.Address);
+      if (body.AccountStatus !== undefined) changes.AccountStatus = body.AccountStatus;
+      if (Object.keys(changes).length === 0) {
+        return status(422, { message: "Provide at least one field to update.", fields: {} });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select({ LoginType: login.LoginType, AccountStatus: login.AccountStatus })
+          .from(login)
+          .where(and(eq(login.LoginId, params.id), eq(login.OrganizationId, organizationId), ne(login.RecordStatus, "D")))
+          .for("update");
+        if (!current) return { kind: "not-found" } as const;
+        if (!(await canEditRole(tx, user.roleId, current.LoginType))) return { kind: "forbidden" } as const;
+        // A new role must be one the caller may give; keeping the current role is always fine.
+        if (changes.LoginType !== undefined && changes.LoginType !== current.LoginType) {
+          const allowed = await creatableRoles(tx, organizationId, user.roleId);
+          if (!allowed.some((r) => r.roleId === changes.LoginType)) {
+            const fields: Record<string, string> = { LoginType: "You can't give this role" };
+            return { kind: "invalid", fields } as const;
+          }
+        }
+        await tx
+          .update(login)
+          .set({ ...changes, UpdatedBy: user.userName, UpdatedDate: sql`localtimestamp` })
+          .where(eq(login.LoginId, params.id));
+        // Deactivated: sign them out everywhere at once.
+        if (changes.AccountStatus === "0" && current.AccountStatus !== "0") {
+          await tx
+            .update(authSession)
+            .set({ RevokedAt: new Date(), RevokedReason: "deactivated" })
+            .where(and(eq(authSession.LoginId, params.id), isNull(authSession.RevokedAt)));
+        }
+        const [row] = await tx
+          .select(listColumns)
+          .from(login)
+          .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+          .where(eq(login.LoginId, params.id));
+        return { kind: "ok", row: row! } as const;
+      });
+
+      if (result.kind === "not-found") return status(404, NOT_FOUND);
+      if (result.kind === "forbidden") return status(403, CANT_EDIT);
+      if (result.kind === "invalid") {
+        return status(422, { message: "Please correct the highlighted fields.", fields: result.fields });
+      }
+      return serialize(result.row);
+    },
+    {
+      params: IdParams,
+      body: UpdateStaffBody,
+      response: { 200: StaffItem, 403: Message, 404: Message, 422: ValidationError },
+      detail: { summary: "Edit a staff member below your role (profile fields or Active/Deactive)" },
     },
   );
