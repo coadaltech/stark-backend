@@ -21,3 +21,13 @@ CREATE INDEX IF NOT EXISTS "auth_session_login_idx" ON "auth_session" ("LoginId"
 -- The site a session belongs to: "main" for the main app (layer 03); organization sites in layer 08.
 -- A refresh keeps the session's site; tokens carry the same value.
 ALTER TABLE "auth_session" ADD COLUMN IF NOT EXISTS "Site" varchar(255) NOT NULL DEFAULT 'main';
+
+-- The organization of the site a session belongs to (layer 08): NULL for the main app. Organization
+-- sessions also keep the site's host in "Site"; the host must still resolve to this organization on
+-- every refresh / session check, so a domain moved to another organization can't carry sessions over.
+ALTER TABLE "auth_session" ADD COLUMN IF NOT EXISTS "SiteOrganizationId" bigint;
+
+-- How many times the refresh token was rotated (layer 08 fix). With ExpiresAt it rebuilds the current
+-- refresh token exactly, so parallel refreshes inside the grace window all receive the same token
+-- instead of rotating again (which made a third parallel refresh look like token theft).
+ALTER TABLE "auth_session" ADD COLUMN IF NOT EXISTS "Rotation" integer NOT NULL DEFAULT 0;

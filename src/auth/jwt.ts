@@ -47,8 +47,9 @@ export async function signJwt(
   secret: string,
   ttlSeconds: number,
   issuer: string,
+  /** Issue time (Unix seconds); pass a stored one to rebuild an identical token. */
+  iat = nowSeconds(),
 ) {
-  const iat = nowSeconds();
   const payload: JwtPayload = {
     ...claims,
     iat,

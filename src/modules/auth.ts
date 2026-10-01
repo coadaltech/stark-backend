@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { authSession, login, sysRole } from "../db/legacy";
+import { authSession, login, organization, role, sysRole } from "../db/legacy";
 import { authGuard } from "../auth/guard";
 import {
   issueAccessToken,
@@ -11,6 +11,8 @@ import {
   verifyRefreshToken,
   type AuthUser,
 } from "../auth/tokens";
+import { normalizeHost } from "../sites/host";
+import { resolveHost } from "../sites/resolve";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -19,6 +21,8 @@ const DEVELOPER_ROLE_ID = 1;
 const ROTATION_GRACE_MS = 30_000;
 const INVALID_CREDENTIALS = "Invalid username or password.";
 const INACTIVE = "Your account is inactive. Please contact your administrator.";
+const ORGANIZATION_INACTIVE = "This organization is inactive. Please contact your administrator.";
+const ROLE_NO_WEB = "Your role can't sign in on the web.";
 const SESSION_ENDED = "Your session has ended. Please sign in again.";
 
 // Checked when the username isn't found, so response time doesn't reveal which usernames exist.
@@ -36,7 +40,30 @@ type Account = {
   OrganizationId: number | null;
   AccountStatus: string;
   RoleName: string;
+  /** The account's role in its organization allows web sign-in (staff only). */
+  RoleWebLogin: boolean;
+  /** The account's organization is active (staff only). */
+  OrganizationActive: boolean;
 };
+
+/** The site a session is for: "main", or an organization site's host plus its organization. */
+type SessionSite = { site: string; siteOrganizationId: number | null };
+
+/** The session site for a host, or null if the host isn't a site. */
+async function siteOfHost(host: string): Promise<SessionSite | null> {
+  const resolved = await resolveHost(host);
+  if (!resolved) return null;
+  return resolved.kind === "main"
+    ? { site: MAIN_SITE, siteOrganizationId: null }
+    : { site: normalizeHost(host), siteOrganizationId: resolved.organizationId };
+}
+
+/** An organization session's host must still resolve to the same organization (Domain ON, not deleted). */
+async function siteStillValid(site: SessionSite): Promise<boolean> {
+  if (site.site === MAIN_SITE) return site.siteOrganizationId === null;
+  const resolved = await resolveHost(site.site);
+  return resolved?.kind === "organization" && resolved.organizationId === site.siteOrganizationId;
+}
 
 function selectAccount(executor: typeof db | Tx) {
   return executor
@@ -49,29 +76,58 @@ function selectAccount(executor: typeof db | Tx) {
       OrganizationId: login.OrganizationId,
       AccountStatus: login.AccountStatus,
       RoleName: sql<string>`coalesce(${sysRole.RoleName}, '')`,
+      RoleWebLogin: sql<boolean>`coalesce(${role.IsWebLogin}, 0) = 1`,
+      OrganizationActive: sql<boolean>`coalesce(${organization.IsOrganizationAllow}, '0') = '1'`,
     })
     .from(login)
     .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+    // The role as configured for the account's organization (IsWebLogin lives there).
+    .leftJoin(
+      role,
+      and(
+        eq(role.OrganizationId, login.OrganizationId),
+        eq(role.RoleId, login.LoginType),
+        ne(role.RecordStatus, "D"),
+      ),
+    )
+    .leftJoin(organization, eq(organization.OrganizationId, login.OrganizationId))
     .$dynamic();
 }
 
+const isDeveloperAccount = (account: Account) =>
+  account.OrganizationId === null && account.LoginType === DEVELOPER_ROLE_ID;
+
 /**
- * Accounts that may sign in to a site. Main app: developers only (platform accounts with no
- * organization). Organization sites are added in layer 08.
+ * Why a matched account (correct password) may not use the site, or null if it may (spec §5.2).
+ * Developers are always allowed (while active); staff also need a web-login role and an active
+ * organization.
  */
-function accountsOfSite(site: string) {
-  if (site !== MAIN_SITE) return sql`false`;
-  return and(
-    isNull(login.OrganizationId),
-    eq(login.LoginType, DEVELOPER_ROLE_ID),
-    ne(login.RecordStatus, "D"),
-  );
+function denial(account: Account): { reason: string; message: string } | null {
+  if (account.AccountStatus !== "1") return { reason: "inactive", message: INACTIVE };
+  if (isDeveloperAccount(account)) return null;
+  if (!account.OrganizationActive) return { reason: "organization", message: ORGANIZATION_INACTIVE };
+  if (!account.RoleWebLogin) return { reason: "role", message: ROLE_NO_WEB };
+  return null;
+}
+
+/**
+ * Accounts that can sign in to a site (before the per-account checks in `denial`). Main app:
+ * developers only. Organization site: developers, or that organization's accounts. Usernames are unique
+ * per organization and developer usernames are reserved, so a username matches at most one of these.
+ */
+function accountsOfSite(site: SessionSite) {
+  const developer = and(isNull(login.OrganizationId), eq(login.LoginType, DEVELOPER_ROLE_ID));
+  const scope =
+    site.siteOrganizationId === null
+      ? developer
+      : or(developer, eq(login.OrganizationId, site.siteOrganizationId));
+  return and(scope, ne(login.RecordStatus, "D"));
 }
 
 const toAuthUser = (
   account: Account,
   sessionId: string,
-  site: string,
+  { site, siteOrganizationId }: SessionSite,
 ): AuthUser => ({
   loginId: account.LoginId,
   userName: account.UserName,
@@ -81,6 +137,7 @@ const toAuthUser = (
   organizationId: account.OrganizationId,
   sessionId,
   site,
+  siteOrganizationId,
 });
 
 const publicUser = (user: AuthUser) => ({
@@ -91,6 +148,7 @@ const publicUser = (user: AuthUser) => ({
   roleName: user.roleName,
   organizationId: user.organizationId,
   site: user.site,
+  siteOrganizationId: user.siteOrganizationId,
 });
 
 const UserSchema = t.Object({
@@ -101,6 +159,7 @@ const UserSchema = t.Object({
   roleName: t.String(),
   organizationId: t.Nullable(t.Number()),
   site: t.String(),
+  siteOrganizationId: t.Nullable(t.Number()),
 });
 
 const TokenPair = t.Object({
@@ -116,11 +175,16 @@ const Message = t.Object({ message: t.String() });
 const RefreshBody = t.Object({
   refreshToken: t.String({ minLength: 1, maxLength: 2000 }),
 });
+const RefreshAtSiteBody = t.Object({
+  refreshToken: t.String({ minLength: 1, maxLength: 2000 }),
+  // The address the refresh comes from; a token is only refreshed at its own site.
+  Host: t.String({ minLength: 1, maxLength: 300, error: "Host is required" }),
+});
 
 async function tokenPair(
   account: Account,
   sessionId: string,
-  site: string,
+  site: SessionSite,
   refresh: { token: string; expiresAt: number },
 ) {
   const user = toAuthUser(account, sessionId, site);
@@ -147,7 +211,8 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
   .post(
     "/login",
     async ({ body, headers, server, request, status }) => {
-      const site = MAIN_SITE; // Layer 08: resolved from the site the user is signing in to.
+      const site = await siteOfHost(body.Host);
+      if (!site) return status(404, { message: "Site not found" });
       const userName = body.UserName.trim();
       const [account] = await selectAccount(db)
         .where(
@@ -163,15 +228,16 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
         .catch(() => false); // e.g. a legacy non-bcrypt value
       if (!account || !passwordOk)
         return status(401, { message: INVALID_CREDENTIALS });
-      if (account.AccountStatus !== "1")
-        return status(403, { message: INACTIVE });
+      const denied = denial(account);
+      if (denied) return status(403, { message: denied.message });
 
       const sessionId = crypto.randomUUID();
-      const refresh = await issueRefreshToken(account.LoginId, sessionId, site);
+      const refresh = await issueRefreshToken(account.LoginId, sessionId, site.site, 0);
       await db.insert(authSession).values({
         SessionId: sessionId,
         LoginId: account.LoginId,
-        Site: site,
+        Site: site.site,
+        SiteOrganizationId: site.siteOrganizationId,
         RefreshTokenHash: refresh.hash,
         ExpiresAt: new Date(refresh.expiresAt * 1000),
         UserAgent: headers["user-agent"]?.slice(0, 300) ?? null,
@@ -191,11 +257,13 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
           maxLength: 72,
           error: "Password is required",
         }),
+        // The address the user is signing in at; decides the site (main app or an organization).
+        Host: t.String({ minLength: 1, maxLength: 300, error: "Host is required" }),
       }),
-      response: { 200: TokenPair, 401: Message, 403: Message },
+      response: { 200: TokenPair, 401: Message, 403: Message, 404: Message },
       detail: {
         summary:
-          "Sign in with username and password (main app: developers only)",
+          "Sign in at a site (main app: developers only; organization site: developers and its staff)",
       },
     },
   )
@@ -204,6 +272,7 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
     async ({ body, status }) => {
       const presented = await verifyRefreshToken(body.refreshToken);
       if (!presented) return status(401, { message: SESSION_ENDED });
+      const hostSite = await siteOfHost(body.Host);
 
       const result = await db.transaction(async (tx) => {
         const [session] = await tx
@@ -227,6 +296,21 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
             .set({ RevokedAt: new Date(), RevokedReason: reason })
             .where(eq(authSession.SessionId, session.SessionId));
 
+        const site: SessionSite = {
+          site: session.Site,
+          siteOrganizationId: session.SiteOrganizationId,
+        };
+        if (
+          hostSite?.site !== site.site ||
+          hostSite.siteOrganizationId !== site.siteOrganizationId
+        ) {
+          // Presented at another address. End the session only if its own site no longer exists for the
+          // same organization (Domain OFF, deleted, or moved); a token carried to another site is
+          // refused without touching its session.
+          if (!(await siteStillValid(site))) await revoke("site");
+          return { kind: "ended" } as const;
+        }
+
         const isCurrent = presented.hash === session.RefreshTokenHash;
         const inGrace =
           presented.hash === session.PreviousRefreshTokenHash &&
@@ -238,28 +322,45 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
           return { kind: "ended" } as const;
         }
 
-        // The account must still be allowed on this site.
+        // The account must still be allowed on this site (spec §5.2).
         const [account] = await selectAccount(tx)
-          .where(
-            and(
-              eq(login.LoginId, session.LoginId),
-              accountsOfSite(session.Site),
-            ),
-          )
+          .where(and(eq(login.LoginId, session.LoginId), accountsOfSite(site)))
           .limit(1);
         if (!account) {
           await revoke("account");
           return { kind: "ended" } as const;
         }
-        if (account.AccountStatus !== "1") {
-          await revoke("inactive");
-          return { kind: "forbidden", message: INACTIVE } as const;
+        const denied = denial(account);
+        if (denied) {
+          await revoke(denied.reason);
+          return { kind: "forbidden", message: denied.message } as const;
         }
 
+        if (inGrace) {
+          // A parallel refresh that raced the latest rotation: hand out the current refresh token
+          // again (rebuilt identically) instead of rotating once more, so every racing request ends
+          // up with the same cookie.
+          const current = await issueRefreshToken(
+            account.LoginId,
+            session.SessionId,
+            session.Site,
+            session.Rotation,
+            Math.floor(session.ExpiresAt.getTime() / 1000) - REFRESH_TTL_SECONDS,
+          );
+          // Sessions from before this scheme can't be rebuilt; treat like an ended session.
+          if (current.hash !== session.RefreshTokenHash) return { kind: "ended" } as const;
+          return {
+            kind: "ok",
+            pair: await tokenPair(account, session.SessionId, site, current),
+          } as const;
+        }
+
+        const rotation = session.Rotation + 1;
         const refresh = await issueRefreshToken(
           account.LoginId,
           session.SessionId,
           session.Site,
+          rotation,
         );
         await tx
           .update(authSession)
@@ -267,17 +368,13 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
             RefreshTokenHash: refresh.hash,
             PreviousRefreshTokenHash: session.RefreshTokenHash,
             RotatedAt: new Date(),
-            ExpiresAt: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+            ExpiresAt: new Date(refresh.expiresAt * 1000),
+            Rotation: rotation,
           })
           .where(eq(authSession.SessionId, session.SessionId));
         return {
           kind: "ok",
-          pair: await tokenPair(
-            account,
-            session.SessionId,
-            session.Site,
-            refresh,
-          ),
+          pair: await tokenPair(account, session.SessionId, site, refresh),
         } as const;
       });
 
@@ -288,11 +385,11 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
       return result.pair;
     },
     {
-      body: RefreshBody,
+      body: RefreshAtSiteBody,
       response: { 200: TokenPair, 401: Message, 403: Message },
       detail: {
         summary:
-          "Exchange a refresh token for a new pair (rotates the refresh token)",
+          "Exchange a refresh token for a new pair at its own site (rotates the refresh token)",
       },
     },
   )
@@ -321,12 +418,15 @@ export const auth = new Elysia({ prefix: "/auth", tags: ["Auth"] })
   .get(
     "/me",
     async ({ user, status }) => {
+      // Same checks as a refresh: the site still exists for the same organization and the account is
+      // still allowed on it. (The session itself was checked by the guard.)
+      const site: SessionSite = { site: user.site, siteOrganizationId: user.siteOrganizationId };
+      if (!(await siteStillValid(site))) return status(401, { message: SESSION_ENDED });
       const [account] = await selectAccount(db)
-        .where(and(eq(login.LoginId, user.loginId), accountsOfSite(user.site)))
+        .where(and(eq(login.LoginId, user.loginId), accountsOfSite(site)))
         .limit(1);
-      if (!account || account.AccountStatus !== "1")
-        return status(401, { message: SESSION_ENDED });
-      return publicUser(toAuthUser(account, user.sessionId, user.site));
+      if (!account || denial(account)) return status(401, { message: SESSION_ENDED });
+      return publicUser(toAuthUser(account, user.sessionId, site));
     },
     {
       response: { 200: UserSchema, 401: Message },

@@ -109,6 +109,8 @@ export const authSession = pgTable("auth_session", {
   SessionId: uuid("SessionId").primaryKey(),
   LoginId: bigint("LoginId", { mode: "number" }).notNull(),
   Site: varchar("Site", { length: 255 }).notNull().default("main"),
+  SiteOrganizationId: bigint("SiteOrganizationId", { mode: "number" }),
+  Rotation: integer("Rotation").notNull().default(0),
   RefreshTokenHash: char("RefreshTokenHash", { length: 64 }).notNull(),
   PreviousRefreshTokenHash: char("PreviousRefreshTokenHash", { length: 64 }),
   ExpiresAt: timestamp("ExpiresAt", { withTimezone: true, mode: "date" }).notNull(),

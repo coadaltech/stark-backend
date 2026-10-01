@@ -1,5 +1,5 @@
 import { Elysia } from "elysia";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
 import { authSession } from "../db/legacy";
 import { MAIN_SITE, verifyAccessToken, type AuthUser } from "./tokens";
@@ -10,7 +10,8 @@ const forbidden = { message: "You don't have access to this." };
 
 /**
  * The signed-in user from `Authorization: Bearer <access token>`, or null. The token must be valid and
- * its session still active on the same site (so logout takes effect immediately).
+ * its session still active on the same site (so logout takes effect immediately). Whether the site
+ * still exists and the account may still use it is checked by /auth/me and on refresh.
  */
 export async function authenticate(
   authorization: string | undefined,
@@ -25,6 +26,7 @@ export async function authenticate(
       and(
         eq(authSession.SessionId, user.sessionId),
         eq(authSession.Site, user.site),
+        sql`${authSession.SiteOrganizationId} is not distinct from ${user.siteOrganizationId}`,
         isNull(authSession.RevokedAt),
         gt(authSession.ExpiresAt, new Date()),
       ),
