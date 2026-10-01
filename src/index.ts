@@ -8,6 +8,7 @@ import { auth } from "./modules/auth";
 import { organizationSite } from "./modules/organization-site";
 import { organizations } from "./modules/organizations";
 import { sites } from "./modules/sites";
+import { staff } from "./modules/staff";
 
 export const app = new Elysia()
   .use(cors({ origin: env.CORS_ORIGIN, credentials: true }))
@@ -33,6 +34,7 @@ export const app = new Elysia()
   .use(organizations)
   .use(sites)
   .use(organizationSite)
+  .use(staff)
   .listen(env.PORT);
 
 export type App = typeof app;

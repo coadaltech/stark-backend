@@ -65,24 +65,46 @@ export const developerGuard = new Elysia({ name: "developer-guard" }).derive(
 );
 
 /**
- * Organization-site work: signed in on an organization site, the site still exists for that
- * organization, and the account is still allowed there (spec §5.2) — checked on every call, so
- * deactivating an organization or turning its Domain off takes effect at once, not after the access
- * token expires. Handlers get `user` and `organizationId` (the site's organization).
+ * Signed in on an organization site, the site still exists for that organization, and the account is
+ * still allowed there (spec §5.2) — checked on every call, so deactivating an organization or turning
+ * its Domain off takes effect at once, not after the access token expires.
  */
+async function authenticateOrganizationSite(
+  authorization: string | undefined,
+): Promise<{ error: 401 | 403 } | { error?: undefined; user: AuthUser; organizationId: number }> {
+  const user = await authenticate(authorization);
+  if (!user) return { error: 401 };
+  const organizationId = user.siteOrganizationId;
+  if (organizationId === null) return { error: 403 };
+  const site = { site: user.site, siteOrganizationId: organizationId };
+  if (!(await siteStillValid(site))) return { error: 401 };
+  const [account] = await selectAccount(db)
+    .where(and(eq(login.LoginId, user.loginId), accountsOfSite(site)))
+    .limit(1);
+  if (!account || denial(account)) return { error: 401 };
+  return { user, organizationId };
+}
+
+/** Organization-site work. Handlers get `user` and `organizationId` (the site's organization). */
 export const organizationSiteGuard = new Elysia({ name: "organization-site-guard" }).derive(
   { as: "scoped" },
   async ({ headers, status }) => {
-    const user = await authenticate(headers.authorization);
-    if (!user) return status(401, unauthorized);
-    const organizationId = user.siteOrganizationId;
-    if (organizationId === null) return status(403, forbidden);
-    const site = { site: user.site, siteOrganizationId: organizationId };
-    if (!(await siteStillValid(site))) return status(401, unauthorized);
-    const [account] = await selectAccount(db)
-      .where(and(eq(login.LoginId, user.loginId), accountsOfSite(site)))
-      .limit(1);
-    if (!account || denial(account)) return status(401, unauthorized);
-    return { user, organizationId };
+    const result = await authenticateOrganizationSite(headers.authorization);
+    if (result.error) return status(result.error, result.error === 401 ? unauthorized : forbidden);
+    return { user: result.user, organizationId: result.organizationId };
+  },
+);
+
+/** Roles that manage staff (spec §3): DEVELOPER, SUPERADMIN, ADMIN. */
+export const STAFF_MANAGER_ROLE_IDS: readonly number[] = [DEVELOPER_ROLE_ID, 2, 7];
+
+/** Organization-site work by someone who manages staff (403 for other roles). */
+export const staffManagerGuard = new Elysia({ name: "staff-manager-guard" }).derive(
+  { as: "scoped" },
+  async ({ headers, status }) => {
+    const result = await authenticateOrganizationSite(headers.authorization);
+    if (result.error) return status(result.error, result.error === 401 ? unauthorized : forbidden);
+    if (!STAFF_MANAGER_ROLE_IDS.includes(result.user.roleId)) return status(403, forbidden);
+    return { user: result.user, organizationId: result.organizationId };
   },
 );
