@@ -57,6 +57,16 @@ function creatableRoles(
  */
 const canEditRole = isRoleBelow;
 
+/** Whether `id` is a (non-deleted) staff permission of the organization. */
+async function isOrganizationStaffPermission(executor: typeof db | Tx, organizationId: number, id: number) {
+  const [row] = await executor
+    .select({ id: staffPermission.StaffPermissionId })
+    .from(staffPermission)
+    .where(and(eq(staffPermission.StaffPermissionId, id), eq(staffPermission.OrganizationId, organizationId), ne(staffPermission.RecordStatus, "D")))
+    .limit(1);
+  return Boolean(row);
+}
+
 /** Stored as "NAME STAFF A/C"; a name typed with the suffix already isn't suffixed twice. */
 const staffName = (typed: string) => {
   const name = upper(typed);
@@ -76,6 +86,9 @@ const listColumns = {
   LoginId: login.LoginId,
   LoginName: login.LoginName,
   LoginType: login.LoginType,
+  /** Assigned staff permission (null = role permissions only). */
+  StaffPermissionId: staffPermission.StaffPermissionId,
+  StaffPermissionTitle: staffPermission.Title,
   RoleName: sql<string>`coalesce(${sysRole.RoleName}, '')`,
   UserName: login.UserName,
   StaffWorkMode: login.StaffWorkMode,
@@ -87,6 +100,8 @@ const listColumns = {
 };
 
 const StaffItem = t.Object({
+  StaffPermissionId: t.Nullable(t.Number()),
+  StaffPermissionTitle: t.Nullable(t.String()),
   LoginId: t.Number(),
   LoginName: t.String(),
   LoginType: t.Number(),
@@ -112,6 +127,8 @@ const ValidationError = t.Object({
 });
 
 const CreateStaffBody = t.Object({
+  /** Optional staff permission of this organization (null / absent = none). */
+  StaffPermissionId: t.Optional(t.Nullable(t.Integer({ error: "Choose a staff permission" }))),
   LoginName: t.String({
     minLength: 1,
     maxLength: 70,
@@ -145,6 +162,7 @@ const CreateStaffBody = t.Object({
 });
 
 const UpdateStaffBody = t.Object({
+  StaffPermissionId: t.Optional(t.Nullable(t.Integer({ error: "Choose a staff permission" }))),
   LoginName: t.Optional(CreateStaffBody.properties.LoginName),
   LoginType: t.Optional(CreateStaffBody.properties.LoginType),
   StaffWorkMode: t.Optional(CreateStaffBody.properties.StaffWorkMode),
@@ -184,6 +202,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
         .select(listColumns)
         .from(login)
         .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+        .leftJoin(staffPermission, and(eq(staffPermission.StaffPermissionId, login.StaffPermissionId), ne(staffPermission.RecordStatus, "D")))
         .where(
           and(
             eq(login.OrganizationId, organizationId),
@@ -219,6 +238,21 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
       },
     },
   )
+  .get(
+    "/permission-options",
+    async ({ organizationId }) =>
+      db
+        .select({ StaffPermissionId: staffPermission.StaffPermissionId, Title: staffPermission.Title })
+        .from(staffPermission)
+        .where(and(eq(staffPermission.OrganizationId, organizationId), ne(staffPermission.RecordStatus, "D")))
+        .orderBy(asc(staffPermission.Title)),
+    {
+      // For the Add / Edit Staff "Permission" dropdown: all of the organization's staff permissions.
+      transform: requirePermission(PAGE, "add", "edit"),
+      response: { 200: t.Array(t.Object({ StaffPermissionId: t.Number(), Title: t.String() })), 403: Message },
+      detail: { summary: "Staff permissions that can be assigned in Add / Edit Staff (by title)" },
+    },
+  )
   .post(
     "/",
     async ({ body, organizationId, user, status }) => {
@@ -230,6 +264,10 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
             const fields: Record<string, string> = {
               LoginType: "You can't create staff with this role",
             };
+            return { kind: "invalid", fields } as const;
+          }
+          if (body.StaffPermissionId != null && !(await isOrganizationStaffPermission(tx, organizationId, body.StaffPermissionId))) {
+            const fields: Record<string, string> = { StaffPermissionId: "Choose a staff permission" };
             return { kind: "invalid", fields } as const;
           }
           // Same organization (any case), or a developer's username (reserved platform-wide).
@@ -256,6 +294,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
               LedgerId: 0,
               LoginName: staffName(body.LoginName),
               UserName: userName,
+              StaffPermissionId: body.StaffPermissionId ?? null,
               Password: await Bun.password.hash(body.Password, {
                 algorithm: "bcrypt",
                 cost: 10,
@@ -276,6 +315,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
             .select(listColumns)
             .from(login)
             .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+        .leftJoin(staffPermission, and(eq(staffPermission.StaffPermissionId, login.StaffPermissionId), ne(staffPermission.RecordStatus, "D")))
             .where(eq(login.LoginId, created!.LoginId));
           return { kind: "ok", row: row! } as const;
         });
@@ -312,6 +352,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
         .select(listColumns)
         .from(login)
         .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+        .leftJoin(staffPermission, and(eq(staffPermission.StaffPermissionId, login.StaffPermissionId), ne(staffPermission.RecordStatus, "D")))
         .where(and(eq(login.LoginId, params.id), eq(login.OrganizationId, organizationId), ne(login.RecordStatus, "D")));
       if (!row) return status(404, NOT_FOUND);
       const canEdit = allows(permissions, PAGE, "edit") && (await canEditRole(db, user.roleId, row.LoginType));
@@ -334,6 +375,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
       if (body.Mobile !== undefined) changes.Mobile = body.Mobile;
       if (body.Address !== undefined) changes.Address = upper(body.Address);
       if (body.AccountStatus !== undefined) changes.AccountStatus = body.AccountStatus;
+      if (body.StaffPermissionId !== undefined) changes.StaffPermissionId = body.StaffPermissionId;
       if (Object.keys(changes).length === 0) {
         return status(422, { message: "Provide at least one field to update.", fields: {} });
       }
@@ -354,17 +396,14 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
             return { kind: "invalid", fields } as const;
           }
         }
+        if (changes.StaffPermissionId != null && !(await isOrganizationStaffPermission(tx, organizationId, changes.StaffPermissionId))) {
+          const fields: Record<string, string> = { StaffPermissionId: "Choose a staff permission" };
+          return { kind: "invalid", fields } as const;
+        }
         await tx
           .update(login)
           .set({ ...changes, UpdatedBy: user.userName, UpdatedDate: sql`localtimestamp` })
           .where(eq(login.LoginId, params.id));
-        // New role: the person's staff restrictions belonged to the old role's permissions.
-        if (changes.LoginType !== undefined && changes.LoginType !== current.LoginType) {
-          await tx
-            .update(staffPermission)
-            .set({ RecordStatus: "D", UpdatedBy: user.userName, UpdatedDate: sql`localtimestamp` })
-            .where(and(eq(staffPermission.LoginId, params.id), ne(staffPermission.RecordStatus, "D")));
-        }
         // Deactivated: sign them out everywhere at once.
         if (changes.AccountStatus === "0" && current.AccountStatus !== "0") {
           await tx
@@ -376,6 +415,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
           .select(listColumns)
           .from(login)
           .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
+        .leftJoin(staffPermission, and(eq(staffPermission.StaffPermissionId, login.StaffPermissionId), ne(staffPermission.RecordStatus, "D")))
           .where(eq(login.LoginId, params.id));
         return { kind: "ok", row: row! } as const;
       });

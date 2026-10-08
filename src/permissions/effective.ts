@@ -1,7 +1,7 @@
 // Effective permissions on an organization site (specs/build/permissions/permission_spec.md §3.1).
 import { and, asc, eq, ne } from "drizzle-orm";
 import { db } from "../db";
-import { rolePermission, staffPermission, subMenu, sysMenu } from "../db/legacy";
+import { login, rolePermission, staffPermission, staffPermissionPage, subMenu, sysMenu } from "../db/legacy";
 import type { AuthUser } from "../auth/tokens";
 
 const DEVELOPER_ROLE_ID = 1;
@@ -64,63 +64,73 @@ export const catalogPages = (catalog: CatalogMenu[]) =>
 const ALL_ACTIONS: PagePermission = { view: true, add: true, edit: true, delete: true, export: true, viewType: "SELF" };
 
 /**
- * The user's effective permissions on the organization's pages:
+ * The user's effective permissions on the organization's pages (spec §3.1):
  * developer → everything (ViewType SELF: all records); otherwise the role's permission for each page
- * with the person's switched-off actions removed; no role permission → no access.
- * Add / Edit / Delete / Export only count with View.
+ * AND the person's staff permission for that page (a page the staff permission has no entry for — or no
+ * staff permission at all — is decided by the role); no role permission → no access.
+ * Add / Edit / Delete / Export only count with View. ViewType always comes from the role.
  */
 export async function effectivePermissions(user: AuthUser, organizationId: number, catalog?: CatalogMenu[]): Promise<PermissionMap> {
   const pages = catalogPages(catalog ?? (await loadCatalog(organizationId)));
   if (isDeveloper(user)) return Object.fromEntries(pages.map((p) => [p.key, ALL_ACTIONS]));
 
-  const rows = await db
-    .select({
-      menuId: rolePermission.MenuId,
-      subMenuId: rolePermission.SubMenuId,
-      view: rolePermission.IsPageAllow,
-      add: rolePermission.Add,
-      edit: rolePermission.Edit,
-      delete: rolePermission.Delete,
-      export: rolePermission.Export,
-      viewType: rolePermission.ViewType,
-      keepView: staffPermission.IsPageAllow,
-      keepAdd: staffPermission.Add,
-      keepEdit: staffPermission.Edit,
-      keepDelete: staffPermission.Delete,
-      keepExport: staffPermission.Export,
-    })
-    .from(rolePermission)
-    .leftJoin(
-      staffPermission,
-      and(
-        eq(staffPermission.RolePermissionId, rolePermission.RolePermissionId),
-        eq(staffPermission.LoginId, user.loginId),
-        ne(staffPermission.RecordStatus, "D"),
+  const [roleRows, staffRows] = await Promise.all([
+    db
+      .select({
+        menuId: rolePermission.MenuId,
+        subMenuId: rolePermission.SubMenuId,
+        view: rolePermission.IsPageAllow,
+        add: rolePermission.Add,
+        edit: rolePermission.Edit,
+        delete: rolePermission.Delete,
+        export: rolePermission.Export,
+        viewType: rolePermission.ViewType,
+      })
+      .from(rolePermission)
+      .where(
+        and(
+          eq(rolePermission.OrganizationId, organizationId),
+          eq(rolePermission.RoleId, user.roleId),
+          ne(rolePermission.RecordStatus, "D"),
+        ),
       ),
-    )
-    .where(
-      and(
-        eq(rolePermission.OrganizationId, organizationId),
-        eq(rolePermission.RoleId, user.roleId),
-        ne(rolePermission.RecordStatus, "D"),
-      ),
-    );
+    // The person's staff permission pages (none when unassigned or the set was deleted).
+    db
+      .select({
+        menuId: staffPermissionPage.MenuId,
+        subMenuId: staffPermissionPage.SubMenuId,
+        view: staffPermissionPage.IsPageAllow,
+        add: staffPermissionPage.Add,
+        edit: staffPermissionPage.Edit,
+        delete: staffPermissionPage.Delete,
+        export: staffPermissionPage.Export,
+      })
+      .from(login)
+      .innerJoin(
+        staffPermission,
+        and(eq(staffPermission.StaffPermissionId, login.StaffPermissionId), ne(staffPermission.RecordStatus, "D")),
+      )
+      .innerJoin(staffPermissionPage, eq(staffPermissionPage.StaffPermissionId, staffPermission.StaffPermissionId))
+      .where(eq(login.LoginId, user.loginId)),
+  ]);
 
   const map: PermissionMap = {};
   for (const page of pages) {
-    const row = rows.find((r) => r.menuId === page.menuId && (r.subMenuId ?? null) === page.subMenuId);
-    if (!row) continue;
-    // Role flag AND not switched off for this person (no staff row = nothing switched off).
-    const on = (role: string, keep: string | null) => role === "1" && (keep ?? "1") === "1";
-    const view = on(row.view, row.keepView);
+    const samePage = (r: { menuId: number; subMenuId: number | null }) => r.menuId === page.menuId && (r.subMenuId ?? null) === page.subMenuId;
+    const role = roleRows.find(samePage);
+    if (!role) continue;
+    const staff = staffRows.find(samePage);
+    // Role flag AND staff permission flag (no staff entry for the page = no extra limit).
+    const on = (roleFlag: string, staffFlag: string | undefined) => roleFlag === "1" && (staffFlag ?? "1") === "1";
+    const view = on(role.view, staff?.view);
     if (!view) continue;
     map[page.key] = {
       view,
-      add: on(row.add, row.keepAdd),
-      edit: on(row.edit, row.keepEdit),
-      delete: on(row.delete, row.keepDelete),
-      export: on(row.export, row.keepExport),
-      viewType: row.viewType,
+      add: on(role.add, staff?.add),
+      edit: on(role.edit, staff?.edit),
+      delete: on(role.delete, staff?.delete),
+      export: on(role.export, staff?.export),
+      viewType: role.viewType,
     };
   }
   return map;

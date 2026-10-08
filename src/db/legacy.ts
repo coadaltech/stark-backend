@@ -77,6 +77,8 @@ export const login = pgTable("login", {
   Mobile: varchar("Mobile", { length: 20 }).notNull(),
   Address: varchar("Address", { length: 50 }).default(""),
   StaffWorkMode: integer("StaffWorkMode").notNull().default(0),
+  /** Assigned staff permission (sql/008); null = role permissions only. */
+  StaffPermissionId: bigint("StaffPermissionId", { mode: "number" }),
   AccountStatus: varchar("AccountStatus", { length: 1 }).notNull(),
   RecordStatus: char("RecordStatus", { length: 1 }).notNull(),
   AddedBy: varchar("AddedBy", { length: 30 }).notNull(),
@@ -182,20 +184,27 @@ export const rolePermission = pgTable("role_permission", {
   UpdatedDate: timestamp("UpdatedDate", { mode: "string" }).notNull(),
 });
 
-/** Per staff member: which of their role permission's actions are kept ('1') or switched off ('0'). */
+/** A named set of actions per page (sql/008), assigned to staff via login.StaffPermissionId. */
 export const staffPermission = pgTable("staff_permission", {
   StaffPermissionId: bigint("StaffPermissionId", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
   OrganizationId: bigint("OrganizationId", { mode: "number" }).notNull(),
-  LoginId: bigint("LoginId", { mode: "number" }).notNull(),
-  RolePermissionId: bigint("RolePermissionId", { mode: "number" }).notNull(),
-  IsPageAllow: varchar("IsPageAllow", { length: 1 }).notNull().default("1"),
-  Add: varchar("Add", { length: 1 }).notNull().default("1"),
-  Edit: varchar("Edit", { length: 1 }).notNull().default("1"),
-  Delete: varchar("Delete", { length: 1 }).notNull().default("1"),
-  Export: varchar("Export", { length: 1 }).notNull().default("1"),
+  Title: varchar("Title", { length: 50 }).notNull(),
   RecordStatus: char("RecordStatus", { length: 1 }).notNull(),
   AddedBy: varchar("AddedBy", { length: 50 }).notNull(),
   AddedDate: timestamp("AddedDate", { mode: "string" }).notNull(),
   UpdatedBy: varchar("UpdatedBy", { length: 50 }).notNull(),
   UpdatedDate: timestamp("UpdatedDate", { mode: "string" }).notNull(),
+});
+
+/** Actions of a staff permission on one page ('1' allowed / '0' not); no row = the role decides. */
+export const staffPermissionPage = pgTable("staff_permission_page", {
+  StaffPermissionPageId: bigint("StaffPermissionPageId", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
+  StaffPermissionId: bigint("StaffPermissionId", { mode: "number" }).notNull(),
+  MenuId: bigint("MenuId", { mode: "number" }).notNull(),
+  SubMenuId: bigint("SubMenuId", { mode: "number" }),
+  IsPageAllow: varchar("IsPageAllow", { length: 1 }).notNull(),
+  Add: varchar("Add", { length: 1 }).notNull(),
+  Edit: varchar("Edit", { length: 1 }).notNull(),
+  Delete: varchar("Delete", { length: 1 }).notNull(),
+  Export: varchar("Export", { length: 1 }).notNull(),
 });
