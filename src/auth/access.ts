@@ -106,3 +106,15 @@ export function accountsOfSite(site: SessionSite) {
       : or(developer, eq(login.OrganizationId, site.siteOrganizationId));
   return and(scope, ne(login.RecordStatus, "D"));
 }
+
+/**
+ * Whether `targetRoleId` is strictly below `callerRoleId` by priority (sys_role.RolePriority; 1 =
+ * highest). Used for "manage only roles / staff below your own".
+ */
+export async function isRoleBelow(executor: typeof db | Tx, callerRoleId: number, targetRoleId: number) {
+  const [row] = await executor
+    .select({ ok: sql<boolean>`target."RolePriority" > caller."RolePriority"` })
+    .from(sql`"sys_role" caller, "sys_role" target`)
+    .where(sql`caller."RoleId" = ${callerRoleId} and target."RoleId" = ${targetRoleId}`);
+  return row?.ok === true;
+}

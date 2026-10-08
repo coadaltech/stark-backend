@@ -501,7 +501,8 @@ export const organizations = new Elysia({
   .post(
     "/",
     async ({ body, status, user }) => {
-      // The organization and its default roles (sql/004_roles.sql) are created together.
+      // The organization, its default roles (sql/004_roles.sql) and its sub-menus + default
+      // permissions (sql/007_permissions.sql) are created together.
       const row = await db.transaction(async (tx) => {
         const [created] = await tx
           .insert(organization)
@@ -534,6 +535,12 @@ export const organizations = new Elysia({
           .returning(listColumns);
         await tx.execute(
           sql`call "assign_default_roles"(${created!.OrganizationId})`,
+        );
+        await tx.execute(
+          sql`call "assign_default_sub_menus"(${created!.OrganizationId})`,
+        );
+        await tx.execute(
+          sql`call "assign_default_permissions"(${created!.OrganizationId})`,
         );
         return created!;
       });

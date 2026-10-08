@@ -1,9 +1,10 @@
 import { Elysia, t } from "elysia";
 import { and, asc, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db";
-import { authSession, login, role, sysRole } from "../db/legacy";
-import { staffManagerGuard } from "../auth/guard";
-import type { Tx } from "../auth/access";
+import { authSession, login, role, staffPermission, sysRole } from "../db/legacy";
+import { organizationSiteGuard, requirePermission } from "../auth/guard";
+import { allows, type PermissionMap } from "../permissions/effective";
+import { isRoleBelow, type Tx } from "../auth/access";
 
 // Staff of the signed-in organization site (spec §3, §7). The organization always comes from the session's site, never from the request.
 
@@ -54,19 +55,22 @@ function creatableRoles(
  * Whether the caller may edit a staff member with role `targetRoleId`: strictly below the caller by
  * priority (the same rule as creating; so never yourself, your peers or anyone above you).
  */
-async function canEditRole(executor: typeof db | Tx, callerRoleId: number, targetRoleId: number) {
-  const [row] = await executor
-    .select({ ok: sql<boolean>`target."RolePriority" > caller."RolePriority"` })
-    .from(sql`"sys_role" caller, "sys_role" target`)
-    .where(sql`caller."RoleId" = ${callerRoleId} and target."RoleId" = ${targetRoleId}`);
-  return row?.ok === true;
-}
+const canEditRole = isRoleBelow;
 
 /** Stored as "NAME STAFF A/C"; a name typed with the suffix already isn't suffixed twice. */
 const staffName = (typed: string) => {
   const name = upper(typed);
   return name.endsWith(NAME_SUFFIX) ? name : name + NAME_SUFFIX;
 };
+
+/** The Staff page (`staff` menu → `staff-list` sub-menu); see specs/build/permissions. */
+const PAGE = "staff-list";
+
+/**
+ * Whether the caller's own staff row is hidden by ViewType: ALL = all users' records excluding mine,
+ * SELF = including mine (permission_spec.md §2).
+ */
+const hidesOwnRow = (permissions: PermissionMap) => permissions[PAGE]?.viewType === "ALL";
 
 const listColumns = {
   LoginId: login.LoginId,
@@ -172,10 +176,10 @@ function isUsernameTaken(error: unknown): boolean {
 }
 
 export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
-  .use(staffManagerGuard)
+  .use(organizationSiteGuard)
   .get(
     "/",
-    async ({ organizationId }) => {
+    async ({ organizationId, user, permissions }) => {
       const rows = await db
         .select(listColumns)
         .from(login)
@@ -184,13 +188,15 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
           and(
             eq(login.OrganizationId, organizationId),
             ne(login.RecordStatus, "D"),
+            hidesOwnRow(permissions) ? ne(login.LoginId, user.loginId) : undefined,
           ),
         )
         .orderBy(desc(login.LoginId));
       return rows.map(serialize);
     },
     {
-      response: { 200: t.Array(StaffItem) },
+      transform: requirePermission(PAGE, "view"),
+      response: { 200: t.Array(StaffItem), 403: Message },
       detail: {
         summary: "Staff of the signed-in organization site (newest first)",
       },
@@ -201,8 +207,11 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
     async ({ organizationId, user }) =>
       creatableRoles(db, organizationId, user.roleId),
     {
+      // Needed by the Add form and the Edit form's role dropdown.
+      transform: requirePermission(PAGE, "add", "edit"),
       response: {
         200: t.Array(t.Object({ roleId: t.Number(), roleName: t.String() })),
+        403: Message,
       },
       detail: {
         summary:
@@ -286,8 +295,9 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
       }
     },
     {
+      transform: requirePermission(PAGE, "add"),
       body: CreateStaffBody,
-      response: { 201: StaffItem, 422: ValidationError },
+      response: { 201: StaffItem, 403: Message, 422: ValidationError },
       detail: {
         summary: "Add a staff member to the signed-in organization site",
       },
@@ -295,18 +305,22 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
   )
   .get(
     "/:id",
-    async ({ params, organizationId, user, status }) => {
+    async ({ params, organizationId, user, permissions, status }) => {
+      // Hidden from the list by ViewType ALL → hidden here too.
+      if (params.id === user.loginId && hidesOwnRow(permissions)) return status(404, NOT_FOUND);
       const [row] = await db
         .select(listColumns)
         .from(login)
         .leftJoin(sysRole, eq(sysRole.RoleId, login.LoginType))
         .where(and(eq(login.LoginId, params.id), eq(login.OrganizationId, organizationId), ne(login.RecordStatus, "D")));
       if (!row) return status(404, NOT_FOUND);
-      return { ...serialize(row), canEdit: await canEditRole(db, user.roleId, row.LoginType) };
+      const canEdit = allows(permissions, PAGE, "edit") && (await canEditRole(db, user.roleId, row.LoginType));
+      return { ...serialize(row), canEdit };
     },
     {
+      transform: requirePermission(PAGE, "view"),
       params: IdParams,
-      response: { 200: StaffDetail, 404: Message },
+      response: { 200: StaffDetail, 403: Message, 404: Message },
       detail: { summary: "One staff member of the site, and whether the signed-in user may edit them" },
     },
   )
@@ -344,6 +358,13 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
           .update(login)
           .set({ ...changes, UpdatedBy: user.userName, UpdatedDate: sql`localtimestamp` })
           .where(eq(login.LoginId, params.id));
+        // New role: the person's staff restrictions belonged to the old role's permissions.
+        if (changes.LoginType !== undefined && changes.LoginType !== current.LoginType) {
+          await tx
+            .update(staffPermission)
+            .set({ RecordStatus: "D", UpdatedBy: user.userName, UpdatedDate: sql`localtimestamp` })
+            .where(and(eq(staffPermission.LoginId, params.id), ne(staffPermission.RecordStatus, "D")));
+        }
         // Deactivated: sign them out everywhere at once.
         if (changes.AccountStatus === "0" && current.AccountStatus !== "0") {
           await tx
@@ -367,6 +388,7 @@ export const staff = new Elysia({ prefix: "/staff", tags: ["Staff"] })
       return serialize(result.row);
     },
     {
+      transform: requirePermission(PAGE, "edit"),
       params: IdParams,
       body: UpdateStaffBody,
       response: { 200: StaffItem, 403: Message, 404: Message, 422: ValidationError },

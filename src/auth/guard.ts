@@ -4,6 +4,7 @@ import { db } from "../db";
 import { authSession, login } from "../db/legacy";
 import { accountsOfSite, denial, selectAccount, siteStillValid } from "./access";
 import { MAIN_SITE, verifyAccessToken, type AuthUser } from "./tokens";
+import { allows, effectivePermissions, type Action, type PermissionMap } from "../permissions/effective";
 
 const DEVELOPER_ROLE_ID = 1;
 const unauthorized = { message: "Please sign in again." };
@@ -85,26 +86,42 @@ async function authenticateOrganizationSite(
   return { user, organizationId };
 }
 
-/** Organization-site work. Handlers get `user` and `organizationId` (the site's organization). */
+/**
+ * Organization-site work. Handlers get `user`, `organizationId` (the site's organization) and the
+ * user's effective `permissions` (specs/build/permissions/permission_spec.md §3.1).
+ */
 export const organizationSiteGuard = new Elysia({ name: "organization-site-guard" }).derive(
   { as: "scoped" },
   async ({ headers, status }) => {
     const result = await authenticateOrganizationSite(headers.authorization);
     if (result.error) return status(result.error, result.error === 401 ? unauthorized : forbidden);
-    return { user: result.user, organizationId: result.organizationId };
+    const permissions = await effectivePermissions(result.user, result.organizationId);
+    return { user: result.user, organizationId: result.organizationId, permissions };
   },
 );
 
-/** Roles that manage staff (spec §3): DEVELOPER, SUPERADMIN, ADMIN. */
-export const STAFF_MANAGER_ROLE_IDS: readonly number[] = [DEVELOPER_ROLE_ID, 2, 7];
+/**
+ * Route hook for routes behind `organizationSiteGuard`: 403 "You don't have access to this." unless
+ * the user may take `action` on page `pageKey`. Use as the route's `transform` hook — it runs before
+ * body validation, so a forbidden caller never sees validation details.
+ *   .post("/", handler, { transform: requirePermission("staff-list", "add"), body })
+ */
+export const requirePermission =
+  (pageKey: string, ...anyOf: [Action, ...Action[]]) =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ({ permissions, status }: { permissions: PermissionMap; status: (code: 403, body: typeof forbidden) => any }) => {
+    if (!anyOf.some((action) => allows(permissions, pageKey, action))) return status(403, forbidden);
+  };
 
-/** Organization-site work by someone who manages staff (403 for other roles). */
-export const staffManagerGuard = new Elysia({ name: "staff-manager-guard" }).derive(
-  { as: "scoped" },
-  async ({ headers, status }) => {
-    const result = await authenticateOrganizationSite(headers.authorization);
-    if (result.error) return status(result.error, result.error === 401 ? unauthorized : forbidden);
-    if (!STAFF_MANAGER_ROLE_IDS.includes(result.user.roleId)) return status(403, forbidden);
-    return { user: result.user, organizationId: result.organizationId };
-  },
-);
+/** Roles that manage permissions (permission_spec.md §3.3): DEVELOPER, SUPERADMIN, ADMIN. */
+export const PERMISSION_MANAGER_ROLE_IDS: readonly number[] = [DEVELOPER_ROLE_ID, 2, 7];
+
+/**
+ * Route hook (as `transform`, before validation) for the Permissions section: only DEVELOPER,
+ * SUPERADMIN and ADMIN; it is not itself controlled by permissions, so nobody can lock themselves out.
+ */
+export const requirePermissionManager =
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ({ user, status }: { user: AuthUser; status: (code: 403, body: typeof forbidden) => any }) => {
+    if (!PERMISSION_MANAGER_ROLE_IDS.includes(user.roleId)) return status(403, forbidden);
+  };
