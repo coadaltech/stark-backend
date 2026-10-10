@@ -8,6 +8,7 @@ import { auth } from "./modules/auth";
 import { organizationSite } from "./modules/organization-site";
 import { organizations } from "./modules/organizations";
 import { permissions } from "./modules/permissions";
+import { shifts } from "./modules/shifts";
 import { sites } from "./modules/sites";
 import { staff } from "./modules/staff";
 
@@ -37,6 +38,7 @@ export const app = new Elysia()
   .use(organizationSite)
   .use(staff)
   .use(permissions)
+  .use(shifts)
   .listen(env.PORT);
 
 export type App = typeof app;

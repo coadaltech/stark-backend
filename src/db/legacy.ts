@@ -208,3 +208,36 @@ export const staffPermissionPage = pgTable("staff_permission_page", {
   Delete: varchar("Delete", { length: 1 }).notNull(),
   Export: varchar("Export", { length: 1 }).notNull(),
 });
+
+// Shifts (legacy tables; sql/009_shifts.sql; spec: specs/build/shifts/shift_spec.md).
+export const shift = pgTable("shift", {
+  ShiftId: bigint("ShiftId", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
+  OrganizationId: bigint("OrganizationId", { mode: "number" }).notNull(),
+  ShiftName: varchar("ShiftName", { length: 50 }).notNull(),
+  /** Open Date. */
+  ShiftDate: date("ShiftDate", { mode: "string" }).notNull(),
+  /** 'Yes' = the shift's end times fall on the next day. */
+  ShiftNextDay: varchar("ShiftNextDay", { length: 3 }).notNull().$type<"Yes" | "No">(),
+  ShiftFor: varchar("ShiftFor", { length: 4 }).notNull().$type<"BOTH" | "WEB" | "APP">(),
+  ShiftOrder: bigint("ShiftOrder", { mode: "number" }).notNull().default(0),
+  IsActive: varchar("IsActive", { length: 1 }).notNull(),
+  RecordStatus: char("RecordStatus", { length: 1 }).notNull(),
+  AddedBy: varchar("AddedBy", { length: 30 }).notNull(),
+  AddedDate: timestamp("AddedDate", { mode: "string" }).notNull(),
+  UpdatedBy: varchar("UpdatedBy", { length: 30 }).notNull(),
+  UpdatedDate: timestamp("UpdatedDate", { mode: "string" }).notNull(),
+});
+
+/** A shift's end time for one role ("HH:MM", 24-hour — legacy reports build date + ' ' + EndTime). */
+export const shiftTiming = pgTable("shift_timing", {
+  ShiftTimeId: bigint("ShiftTimeId", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
+  ShiftId: bigint("ShiftId", { mode: "number" }).notNull(),
+  OrganizationId: bigint("OrganizationId", { mode: "number" }).notNull(),
+  RoleId: bigint("RoleId", { mode: "number" }).notNull(),
+  EndTime: varchar("EndTime", { length: 50 }).notNull(),
+  RecordStatus: char("RecordStatus", { length: 1 }).notNull(),
+  AddedBy: varchar("AddedBy", { length: 30 }).notNull(),
+  AddedDate: timestamp("AddedDate", { mode: "string" }).notNull(),
+  UpdatedBy: varchar("UpdatedBy", { length: 30 }).notNull(),
+  UpdatedDate: timestamp("UpdatedDate", { mode: "string" }).notNull(),
+});
